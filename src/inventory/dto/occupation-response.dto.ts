@@ -6,9 +6,8 @@ export class LocationOccupationDto {
   type: LocationType;
   aisle: string | null;
   rack: string | null;
-  level: string | null;
   position: string | null;
-  maxCapacity: number;
+  capacity: number;
   currentBultos: number;
   occupationPercentage: number;
   availableBultos: number;

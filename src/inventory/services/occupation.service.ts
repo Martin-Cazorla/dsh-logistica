@@ -38,14 +38,15 @@ export class OccupationService {
     let totalCurrentBultos = 0;
 
     const locationsOccupation: LocationOccupationDto[] =
-      warehouse.locations.map((loc) => {
+      warehouse.locations.map((loc: any) => {
         const currentBultos = loc.inventories.reduce(
-          (acc, inv) => acc + inv.quantity,
+          (acc: number, inv: any) => acc + inv.quantity,
           0,
         );
 
-        // Se utilizan las propiedades nativas del schema de Prisma
-        const maxCapacity = loc.maxCapacity || 0;
+        // Mapeo seguro según la propiedad de capacidad en la DB (capacity o maxCapacity)
+        const maxCapacity =
+          loc.capacity ?? loc.maxCapacity ?? loc.maxCapacityBultos ?? 0;
         const availableBultos = Math.max(0, maxCapacity - currentBultos);
         const occupationPercentage =
           maxCapacity > 0
@@ -61,9 +62,8 @@ export class OccupationService {
           type: loc.type,
           aisle: loc.aisle ?? null,
           rack: loc.rack ?? null,
-          level: loc.level ?? null,
           position: loc.position ?? null,
-          maxCapacity: maxCapacity,
+          capacity: maxCapacity,
           currentBultos: currentBultos,
           occupationPercentage: occupationPercentage,
           availableBultos: availableBultos,
