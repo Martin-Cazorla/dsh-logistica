@@ -1,7 +1,3 @@
-// prisma/schema.prisma
-
-// prisma/schema.prisma
-
 datasource db {
     provider = "postgresql"
     url      = env("DATABASE_URL")
@@ -32,18 +28,18 @@ enum OrderStatus {
 }
 
 enum MovementType {
-    INBOUND // Recepción de mercadería
-    OUTBOUND // Salida por venta/despacho
-    TRANSFER_IN // Entrada por transferencia inter-depósito
-    TRANSFER_OUT // Salida por transferencia inter-depósito
-    ADJUSTMENT // Corrección por inventario físico
+    INBOUND
+    OUTBOUND
+    TRANSFER_IN
+    TRANSFER_OUT
+    ADJUSTMENT
 }
 
 enum LocationType {
-    RECEIVING // Zona de recepción / muelle
-    STORAGE // Almacenamiento estándar
-    PICKING // Ubicación rápida de picking
-    DISPATCH // Zona de consolidación y despacho
+    RECEIVING
+    STORAGE
+    PICKING
+    DISPATCH
 }
 
 enum RouteStatus {
@@ -53,8 +49,26 @@ enum RouteStatus {
     CANCELLED
 }
 
+enum TaxCondition {
+    RESPONSABLE_INSCRIPTO
+    MONOTRIBUTO
+    EXENTO
+    CONSUMIDOR_FINAL
+}
+
+enum Currency {
+    ARS
+    USD
+}
+
+enum PaymentTerm {
+    CUENTA_CORRIENTE
+    CONTADO
+    DEPOSITO
+}
+
 // ==========================================
-// GESTIÓN DE USUARIOS Y ROLES
+// USUARIOS
 // ==========================================
 
 model User {
@@ -66,8 +80,8 @@ model User {
     role      UserRole @default(PICKER)
     isActive  Boolean  @default(true) @map("is_active")
 
-    // Relaciones
     assignedOrders Order[]         @relation("PickerOrders")
+    salesOrders    Order[]         @relation("SellerOrders")
     routes         Route[]         @relation("DriverRoutes")
     movements      StockMovement[] @relation("UserMovements")
 
@@ -83,12 +97,11 @@ model User {
 
 model Warehouse {
     id       String  @id @default(uuid()) @db.Uuid
-    code     String  @unique @db.VarChar(20) // Ej: "CHILE-1", "CHILE-2", "MURGUINDO", "ARMENIA", "MOLINEDO"
+    code     String  @unique @db.VarChar(20)
     name     String  @db.VarChar(150)
     address  String? @db.VarChar(255)
     isActive Boolean @default(true) @map("is_active")
 
-    // Relaciones
     locations      Location[]
     inventories    Inventory[]
     sourceOrders   Order[]         @relation("SourceWarehouse")
@@ -103,15 +116,15 @@ model Warehouse {
 model Location {
     id          String       @id @default(uuid()) @db.Uuid
     warehouseId String       @map("warehouse_id") @db.Uuid
-    code        String       @db.VarChar(50) // Ej: "PAS-F-RACK-A-POS-01"
-    aisle       String       @db.VarChar(20) // "pas. D" al "pas. K", "tech. dev", "tech ofi"
-    rack        String       @db.VarChar(10) // "A" (Piso), "B" (2do nivel), "C" (3er nivel)
-    position    String       @db.VarChar(10) // Posición numerada
+    code        String       @db.VarChar(50)
+    aisle       String       @db.VarChar(20)
+    rack        String       @db.VarChar(10)
+    position    String       @db.VarChar(10)
+    capacity    Int          @default(0)
     type        LocationType @default(STORAGE)
-    notes       String?      @db.VarChar(255) // Ej: "enfrente del baño", "cerca del portón"
+    notes       String?      @db.VarChar(255)
     isBlocked   Boolean      @default(false) @map("is_blocked")
 
-    // Relaciones
     warehouse       Warehouse       @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
     inventories     Inventory[]
     sourceMovements StockMovement[] @relation("SourceLocation")
@@ -135,10 +148,11 @@ model Product {
     barcode     String? @unique @db.VarChar(100)
     name        String  @db.VarChar(200)
     description String? @db.Text
+    unitsPerBox Int     @default(1) @map("units_per_box") // Unidades totales por bulto cerrado
+    unitPrice   Decimal @default(0.00) @map("unit_price") @db.Decimal(12, 2)
     weightKg    Decimal @default(0.00) @map("weight_kg") @db.Decimal(10, 2)
     volumeM3    Decimal @default(0.00) @map("volume_m3") @db.Decimal(10, 4)
 
-    // Relaciones
     inventories Inventory[]
     orderItems  OrderItem[]
     movements   StockMovement[]
@@ -158,11 +172,9 @@ model Inventory {
     lotNumber   String?   @map("lot_number") @db.VarChar(100)
     expiresAt   DateTime? @map("expires_at")
 
-    // Control estricto de Stock
-    quantity Int @default(0) // Stock físico real
-    reserved Int @default(0) // Stock reservado para picking en curso
+    quantity Int @default(0)
+    reserved Int @default(0)
 
-    // Relaciones
     warehouse Warehouse @relation(fields: [warehouseId], references: [id])
     location  Location  @relation(fields: [locationId], references: [id])
     product   Product   @relation(fields: [productId], references: [id])
@@ -186,7 +198,6 @@ model StockMovement {
     type             MovementType
     referenceCode    String?      @map("reference_code") @db.VarChar(100)
 
-    // Relaciones
     warehouse      Warehouse @relation(fields: [warehouseId], references: [id])
     product        Product   @relation(fields: [productId], references: [id])
     sourceLocation Location? @relation("SourceLocation", fields: [sourceLocationId], references: [id])
@@ -200,18 +211,43 @@ model StockMovement {
 }
 
 // ==========================================
-// CLIENTES, PEDIDOS Y PICKING
+// TRANSPORTES EXTERNOS
+// ==========================================
+
+model Transport {
+    id            String  @id @default(uuid()) @db.Uuid
+    name          String  @db.VarChar(200)
+    address       String  @db.VarChar(255)
+    phone         String? @db.VarChar(50)
+    businessHours String? @map("business_hours") @db.VarChar(150)
+
+    customers Customer[]
+    orders    Order[]
+
+    createdAt DateTime @default(now()) @map("created_at")
+    updatedAt DateTime @updatedAt @map("updated_at")
+
+    @@map("transports")
+}
+
+// ==========================================
+// CLIENTES Y DIRECCIONES
 // ==========================================
 
 model Customer {
-    id      String  @id @default(uuid()) @db.Uuid
-    code    String  @unique @db.VarChar(50)
-    name    String  @db.VarChar(200)
-    email   String  @db.VarChar(255)
-    phone   String? @db.VarChar(50)
-    address String  @db.VarChar(255)
+    id             String       @id @default(uuid()) @db.Uuid
+    customerNumber String       @unique @map("customer_number") @db.VarChar(50) // Número de cliente
+    cuit           String       @unique @db.VarChar(20)
+    name           String       @db.VarChar(200) // Nombre comercial
+    legalName      String       @map("legal_name") @db.VarChar(200) // Razón Social
+    email          String       @db.VarChar(255)
+    phone          String?      @db.VarChar(50)
+    taxCondition   TaxCondition @default(RESPONSABLE_INSCRIPTO) @map("tax_condition")
+    transportId    String?      @map("transport_id") @db.Uuid
 
-    orders Order[]
+    transport Transport?        @relation(fields: [transportId], references: [id])
+    addresses CustomerAddress[]
+    orders    Order[]
 
     createdAt DateTime @default(now()) @map("created_at")
     updatedAt DateTime @updatedAt @map("updated_at")
@@ -219,21 +255,57 @@ model Customer {
     @@map("customers")
 }
 
-model Order {
-    id                String      @id @default(uuid()) @db.Uuid
-    orderNumber       String      @unique @map("order_number") @db.VarChar(50)
-    customerId        String      @map("customer_id") @db.Uuid
-    sourceWarehouseId String      @map("source_warehouse_id") @db.Uuid
-    pickerId          String?     @map("picker_id") @db.Uuid
-    routeId           String?     @map("route_id") @db.Uuid
-    status            OrderStatus @default(PENDING)
-    deliveryAddress   String      @map("delivery_address") @db.VarChar(255)
+model CustomerAddress {
+    id            String  @id @default(uuid()) @db.Uuid
+    customerId    String  @map("customer_id") @db.Uuid
+    address       String  @db.VarChar(255)
+    city          String  @db.VarChar(100)
+    province      String  @db.VarChar(100)
+    zipCode       String  @map("zip_code") @db.VarChar(20)
+    businessHours String? @map("business_hours") @db.VarChar(150) // Días y horarios de atención
+    isDefault     Boolean @default(false) @map("is_default")
 
-    // Relaciones
-    customer        Customer    @relation(fields: [customerId], references: [id])
-    sourceWarehouse Warehouse   @relation("SourceWarehouse", fields: [sourceWarehouseId], references: [id])
-    picker          User?       @relation("PickerOrders", fields: [pickerId], references: [id])
-    route           Route?      @relation(fields: [routeId], references: [id])
+    customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+    orders   Order[]
+
+    createdAt DateTime @default(now()) @map("created_at")
+    updatedAt DateTime @updatedAt @map("updated_at")
+
+    @@map("customer_addresses")
+}
+
+// ==========================================
+// PEDIDOS
+// ==========================================
+
+model Order {
+    id                String  @id @default(uuid()) @db.Uuid
+    orderNumber       String  @unique @map("order_number") @db.VarChar(50) // Presupuesto / Nro Pedido
+    customerId        String  @map("customer_id") @db.Uuid
+    addressId         String  @map("address_id") @db.Uuid
+    sourceWarehouseId String  @map("source_warehouse_id") @db.Uuid
+    sellerId          String? @map("seller_id") @db.Uuid
+    pickerId          String? @map("picker_id") @db.Uuid
+    routeId           String? @map("route_id") @db.Uuid
+    transportId       String? @map("transport_id") @db.Uuid
+
+    currency    Currency    @default(ARS)
+    paymentTerm PaymentTerm @default(CUENTA_CORRIENTE) @map("payment_term")
+    status      OrderStatus @default(PENDING)
+
+    deliveryDateFrom DateTime? @map("delivery_date_from") @db.Date
+    deliveryDateTo   DateTime? @map("delivery_date_to") @db.Date
+
+    totalBultos Int     @default(0) @map("total_bultos")
+    totalAmount Decimal @default(0.00) @map("total_amount") @db.Decimal(12, 2)
+
+    customer        Customer        @relation(fields: [customerId], references: [id])
+    deliveryAddress CustomerAddress @relation(fields: [addressId], references: [id])
+    sourceWarehouse Warehouse       @relation("SourceWarehouse", fields: [sourceWarehouseId], references: [id])
+    seller          User?           @relation("SellerOrders", fields: [sellerId], references: [id])
+    picker          User?           @relation("PickerOrders", fields: [pickerId], references: [id])
+    route           Route?          @relation(fields: [routeId], references: [id])
+    transport       Transport?      @relation(fields: [transportId], references: [id])
     items           OrderItem[]
 
     createdAt DateTime @default(now()) @map("created_at")
@@ -245,13 +317,14 @@ model Order {
 }
 
 model OrderItem {
-    id        String @id @default(uuid()) @db.Uuid
-    orderId   String @map("order_id") @db.Uuid
-    productId String @map("product_id") @db.Uuid
-    quantity  Int
-    pickedQty Int    @default(0) @map("picked_qty")
+    id         String  @id @default(uuid()) @db.Uuid
+    orderId    String  @map("order_id") @db.Uuid
+    productId  String  @map("product_id") @db.Uuid
+    bultos     Int // Cantidad de bultos pedidos
+    totalUnits Int     @map("total_units") // Unidades totales (bultos * unidades por caja)
+    unitPrice  Decimal @default(0.00) @map("unit_price") @db.Decimal(12, 2)
+    pickedQty  Int     @default(0) @map("picked_qty")
 
-    // Relaciones
     order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
     product Product @relation(fields: [productId], references: [id])
 
@@ -271,7 +344,6 @@ model Route {
     status        RouteStatus @default(PLANNED)
     scheduledDate DateTime    @map("scheduled_date") @db.Date
 
-    // Relaciones
     driver User    @relation("DriverRoutes", fields: [driverId], references: [id])
     orders Order[]
 
