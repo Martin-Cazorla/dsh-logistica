@@ -1,12 +1,21 @@
 import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import { AppModule } from './app.module';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  // Global Pipes para validación estricta de DTOs y seguridad
+  // 1. Configurar el prefijo global '/api' para todos los endpoints
+  app.setGlobalPrefix('api');
+
+  // 2. Habilitar CORS para permitir peticiones desde el frontend (Next.js)
+  app.enableCors({
+    origin: 'http://localhost:3000',
+    credentials: true,
+  });
+
+  // 3. Configurar pipes de validación global (clase-validator / DTOs)
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -15,14 +24,11 @@ async function bootstrap() {
     }),
   );
 
-  // Habilitar CORS para consumo mobile y frontend desacoplado
-  app.enableCors();
-
-  // Configuración de Documentación Swagger UI
+  // 4. Configurar Swagger para la documentación
   const config = new DocumentBuilder()
-    .setTitle('WMS / ERP dsh-logistica API')
+    .setTitle('DSH Logística - WMS / ERP API')
     .setDescription(
-      'Documentación interactiva de la API REST para el sistema de logística, inventario, picking y hojas de ruta.',
+      'Documentación de la API para el sistema de gestión logística',
     )
     .setVersion('1.0')
     .addBearerAuth()
@@ -31,9 +37,11 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api/docs', app, document);
 
-  const PORT = process.env.PORT || 3000;
-  await app.listen(PORT);
-  console.log(`🚀 Servidor WMS corriendo en: http://localhost:${PORT}`);
-  console.log(`📚 Documentación Swagger en: http://localhost:${PORT}/api/docs`);
+  // 5. Iniciar el servidor en el puerto 3001
+  const port = process.env.PORT || 3001;
+  await app.listen(port);
+  console.log(`🚀 Backend corriendo en: http://localhost:${port}/api`);
+  console.log(`📚 Documentación Swagger en: http://localhost:${port}/api/docs`);
 }
+
 bootstrap();
