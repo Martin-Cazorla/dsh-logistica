@@ -22,6 +22,7 @@ enum OrderStatus {
     PENDING
     IN_PICKING
     PICKED
+    CHECKED
     DISPATCHED
     DELIVERED
     CANCELLED
@@ -68,7 +69,7 @@ enum PaymentTerm {
 }
 
 // ==========================================
-// USUARIOS
+// USUARIOS Y ROLES
 // ==========================================
 
 model User {
@@ -80,10 +81,12 @@ model User {
     role      UserRole @default(PICKER)
     isActive  Boolean  @default(true) @map("is_active")
 
-    assignedOrders Order[]         @relation("PickerOrders")
-    salesOrders    Order[]         @relation("SellerOrders")
-    routes         Route[]         @relation("DriverRoutes")
-    movements      StockMovement[] @relation("UserMovements")
+    // Relaciones
+    assignedOrders   Order[]         @relation("PickerOrders")
+    salesOrders      Order[]         @relation("SellerOrders")
+    routes           Route[]         @relation("DriverRoutes")
+    movements        StockMovement[] @relation("UserMovements")
+    pickedOrderItems OrderItem[]     @relation("ItemPicker")
 
     createdAt DateTime @default(now()) @map("created_at")
     updatedAt DateTime @updatedAt @map("updated_at")
@@ -148,7 +151,7 @@ model Product {
     barcode     String? @unique @db.VarChar(100)
     name        String  @db.VarChar(200)
     description String? @db.Text
-    unitsPerBox Int     @default(1) @map("units_per_box") // Unidades totales por bulto cerrado
+    unitsPerBox Int     @default(1) @map("units_per_box")
     unitPrice   Decimal @default(0.00) @map("unit_price") @db.Decimal(12, 2)
     weightKg    Decimal @default(0.00) @map("weight_kg") @db.Decimal(10, 2)
     volumeM3    Decimal @default(0.00) @map("volume_m3") @db.Decimal(10, 4)
@@ -236,10 +239,10 @@ model Transport {
 
 model Customer {
     id             String       @id @default(uuid()) @db.Uuid
-    customerNumber String       @unique @map("customer_number") @db.VarChar(50) // Número de cliente
+    customerNumber String       @unique @map("customer_number") @db.VarChar(50)
     cuit           String       @unique @db.VarChar(20)
-    name           String       @db.VarChar(200) // Nombre comercial
-    legalName      String       @map("legal_name") @db.VarChar(200) // Razón Social
+    name           String       @db.VarChar(200)
+    legalName      String       @map("legal_name") @db.VarChar(200)
     email          String       @db.VarChar(255)
     phone          String?      @db.VarChar(50)
     taxCondition   TaxCondition @default(RESPONSABLE_INSCRIPTO) @map("tax_condition")
@@ -262,7 +265,7 @@ model CustomerAddress {
     city          String  @db.VarChar(100)
     province      String  @db.VarChar(100)
     zipCode       String  @map("zip_code") @db.VarChar(20)
-    businessHours String? @map("business_hours") @db.VarChar(150) // Días y horarios de atención
+    businessHours String? @map("business_hours") @db.VarChar(150)
     isDefault     Boolean @default(false) @map("is_default")
 
     customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
@@ -275,17 +278,17 @@ model CustomerAddress {
 }
 
 // ==========================================
-// PEDIDOS
+// PEDIDOS Y PICKING
 // ==========================================
 
 model Order {
     id                String  @id @default(uuid()) @db.Uuid
-    orderNumber       String  @unique @map("order_number") @db.VarChar(50) // Presupuesto / Nro Pedido
+    orderNumber       String  @unique @map("order_number") @db.VarChar(50)
     customerId        String  @map("customer_id") @db.Uuid
     addressId         String  @map("address_id") @db.Uuid
     sourceWarehouseId String  @map("source_warehouse_id") @db.Uuid
     sellerId          String? @map("seller_id") @db.Uuid
-    pickerId          String? @map("picker_id") @db.Uuid
+    pickerId          String? @map("picker_id") @db.Uuid // Picker principal o coordinador
     routeId           String? @map("route_id") @db.Uuid
     transportId       String? @map("transport_id") @db.Uuid
 
@@ -296,8 +299,9 @@ model Order {
     deliveryDateFrom DateTime? @map("delivery_date_from") @db.Date
     deliveryDateTo   DateTime? @map("delivery_date_to") @db.Date
 
-    totalBultos Int     @default(0) @map("total_bultos")
-    totalAmount Decimal @default(0.00) @map("total_amount") @db.Decimal(12, 2)
+    totalBultos   Int     @default(0) @map("total_bultos")
+    totalWeightKg Decimal @default(0.00) @map("total_weight_kg") @db.Decimal(10, 2)
+    totalAmount   Decimal @default(0.00) @map("total_amount") @db.Decimal(12, 2)
 
     customer        Customer        @relation(fields: [customerId], references: [id])
     deliveryAddress CustomerAddress @relation(fields: [addressId], references: [id])
@@ -317,16 +321,19 @@ model Order {
 }
 
 model OrderItem {
-    id         String  @id @default(uuid()) @db.Uuid
-    orderId    String  @map("order_id") @db.Uuid
-    productId  String  @map("product_id") @db.Uuid
-    bultos     Int // Cantidad de bultos pedidos
-    totalUnits Int     @map("total_units") // Unidades totales (bultos * unidades por caja)
+    id        String  @id @default(uuid()) @db.Uuid
+    orderId   String  @map("order_id") @db.Uuid
+    productId String  @map("product_id") @db.Uuid
+    pickerId  String? @map("picker_id") @db.Uuid // Asignación individual para armados en equipo
+
+    bultos     Int
+    totalUnits Int     @map("total_units")
     unitPrice  Decimal @default(0.00) @map("unit_price") @db.Decimal(12, 2)
     pickedQty  Int     @default(0) @map("picked_qty")
 
     order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
     product Product @relation(fields: [productId], references: [id])
+    picker  User?   @relation("ItemPicker", fields: [pickerId], references: [id])
 
     @@unique([orderId, productId])
     @@map("order_items")
