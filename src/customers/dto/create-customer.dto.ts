@@ -4,46 +4,77 @@ import {
   IsOptional,
   IsString,
   IsEmail,
+  IsArray,
+  ValidateNested,
+  ArrayMinSize,
+  IsBoolean,
+  IsUUID,
 } from 'class-validator';
+import { Type } from 'class-transformer';
+import { TaxCondition } from '@prisma/client';
 
-export enum DeliveryZone {
-  CABA = 'CABA',
-  ZONA_NORTE = 'ZONA_NORTE',
-  ZONA_SUR = 'ZONA_SUR',
-  ZONA_OESTE = 'ZONA_OESTE',
-  INTERIOR = 'INTERIOR',
+export class CreateCustomerAddressDto {
+  @IsString()
+  @IsNotEmpty()
+  address: string;
+
+  @IsString()
+  @IsNotEmpty()
+  city: string;
+
+  @IsString()
+  @IsNotEmpty()
+  province: string;
+
+  @IsString()
+  @IsNotEmpty()
+  zipCode: string;
+
+  @IsString()
+  @IsOptional()
+  businessHours?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  isDefault?: boolean;
 }
 
 export class CreateCustomerDto {
   @IsString()
   @IsNotEmpty()
-  code: string;
+  customerNumber: string;
+
+  @IsString()
+  @IsNotEmpty()
+  cuit: string;
 
   @IsString()
   @IsNotEmpty()
   name: string;
 
   @IsString()
-  @IsOptional()
-  taxId?: string;
+  @IsNotEmpty()
+  legalName: string;
 
   @IsEmail()
-  @IsOptional()
-  email?: string;
+  @IsNotEmpty()
+  email: string;
 
   @IsString()
   @IsOptional()
   phone?: string;
 
-  @IsString()
+  @IsEnum(TaxCondition)
   @IsNotEmpty()
-  address: string;
+  taxCondition: TaxCondition;
 
-  @IsString()
+  @IsUUID()
   @IsOptional()
-  city?: string;
+  transportId?: string;
 
-  @IsEnum(DeliveryZone)
-  @IsNotEmpty()
-  zone: DeliveryZone;
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => CreateCustomerAddressDto)
+  addresses: CreateCustomerAddressDto[];
 }

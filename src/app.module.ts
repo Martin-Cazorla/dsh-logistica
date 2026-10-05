@@ -4,6 +4,7 @@ import { InventoryModule } from './inventory/inventory.module';
 import { CustomersModule } from './customers/customers.module';
 import { OrdersModule } from './orders/orders.module';
 import { TransportsModule } from './transports/transports.module';
+import { AuthModule } from './auth/auth.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
@@ -14,6 +15,7 @@ import { AppService } from './app.service';
     CustomersModule,
     OrdersModule,
     TransportsModule,
+    AuthModule,
   ],
   controllers: [AppController],
   providers: [AppService],

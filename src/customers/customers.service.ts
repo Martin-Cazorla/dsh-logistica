@@ -4,39 +4,75 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateCustomerDto } from './dto/create-customer.dto';
+import {
+  CreateCustomerDto,
+  CreateCustomerAddressDto,
+} from './dto/create-customer.dto';
 
 @Injectable()
 export class CustomersService {
   constructor(private readonly prisma: PrismaService) {}
 
   async create(createCustomerDto: CreateCustomerDto) {
+    const {
+      customerNumber,
+      cuit,
+      name,
+      legalName,
+      email,
+      phone,
+      taxCondition,
+      transportId,
+      addresses,
+    } = createCustomerDto;
+
+    // Validar unicidad por customerNumber o CUIT
     const existingCustomer = await this.prisma.customer.findFirst({
-      where: { code: createCustomerDto.code },
+      where: {
+        OR: [{ customerNumber }, { cuit }],
+      },
     });
 
     if (existingCustomer) {
       throw new ConflictException(
-        `Ya existe un cliente registrado con el código "${createCustomerDto.code}".`,
+        `Ya existe un cliente con el número "${customerNumber}" o CUIT "${cuit}".`,
       );
     }
 
     return this.prisma.customer.create({
       data: {
-        code: createCustomerDto.code,
-        name: createCustomerDto.name,
-        address: createCustomerDto.address,
-        zone: createCustomerDto.zone,
-        taxId: createCustomerDto.taxId ?? '',
-        email: createCustomerDto.email ?? '',
-        phone: createCustomerDto.phone ?? '',
-        city: createCustomerDto.city ?? '',
+        customerNumber,
+        cuit,
+        name,
+        legalName,
+        email,
+        phone: phone ?? null,
+        taxCondition,
+        transportId: transportId ?? null,
+        addresses: {
+          create: addresses.map((addr: CreateCustomerAddressDto) => ({
+            address: addr.address,
+            city: addr.city,
+            province: addr.province,
+            zipCode: addr.zipCode,
+            businessHours: addr.businessHours ?? null,
+            isDefault: addr.isDefault ?? false,
+          })),
+        },
+      },
+      include: {
+        addresses: true,
+        transport: true,
       },
     });
   }
 
   async findAll() {
     return this.prisma.customer.findMany({
+      include: {
+        addresses: true,
+        transport: true,
+      },
       orderBy: { name: 'asc' },
     });
   }
@@ -45,6 +81,8 @@ export class CustomersService {
     const customer = await this.prisma.customer.findUnique({
       where: { id },
       include: {
+        addresses: true,
+        transport: true,
         orders: {
           take: 5,
           orderBy: { createdAt: 'desc' },
