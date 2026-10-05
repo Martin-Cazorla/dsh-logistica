@@ -1,6 +1,5 @@
-// prisma/seed.ts
-
 import { PrismaClient, UserRole, LocationType } from '@prisma/client';
+import * as bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient();
 
@@ -8,27 +7,29 @@ async function main() {
   console.log('🌱 Iniciando la precarga de datos iniciales (Seeding)...');
 
   // ==========================================
-  // 1. USUARIOS INICIALES (ADMIN Y PICKER)
+  // 1. USUARIOS INICIALES CON BCRYPT (ADMIN, PICKER, DRIVER)
   // ==========================================
-  const adminUser = await prisma.user.upsert({
+  const hashedPassword = await bcrypt.hash('123456', 10);
+
+  await prisma.user.upsert({
     where: { email: 'admin@dshlogistica.com' },
     update: {},
     create: {
       email: 'admin@dshlogistica.com',
-      password: 'password123', // En producción usaremos bcrypt
-      firstName: 'Administrador',
-      lastName: 'General',
+      password: hashedPassword,
+      firstName: 'Héctor',
+      lastName: 'Cazorla',
       role: UserRole.ADMIN,
       isActive: true,
     },
   });
 
-  const pickerUser = await prisma.user.upsert({
+  await prisma.user.upsert({
     where: { email: 'picker1@dshlogistica.com' },
     update: {},
     create: {
       email: 'picker1@dshlogistica.com',
-      password: 'password123',
+      password: hashedPassword,
       firstName: 'Operario',
       lastName: 'Picking 1',
       role: UserRole.PICKER,
@@ -36,7 +37,22 @@ async function main() {
     },
   });
 
-  console.log('✅ Usuarios creados.');
+  await prisma.user.upsert({
+    where: { email: 'driver1@dshlogistica.com' },
+    update: {},
+    create: {
+      email: 'driver1@dshlogistica.com',
+      password: hashedPassword,
+      firstName: 'Chofer',
+      lastName: 'Reparto 1',
+      role: UserRole.DRIVER,
+      isActive: true,
+    },
+  });
+
+  console.log(
+    '✅ 3 Usuarios creados con seguridad bcrypt (Admin, Picker, Driver).',
+  );
 
   // ==========================================
   // 2. DEPÓSITOS OPERATIVOS
@@ -84,29 +100,28 @@ async function main() {
     'tech ofi',
   ];
 
-  const racks = ['A', 'B', 'C']; // A: Piso, B: Nivel 2, C: Nivel 3
+  const racks = ['A', 'B', 'C'];
   const positions = ['01', '02', '03', '04', '05'];
 
   let totalLocationsCreated = 0;
+  let firstLocationId = '';
 
   for (const [whCode, whId] of warehousesMap.entries()) {
     for (const aisle of aisles) {
       for (const rack of racks) {
         for (const pos of positions) {
-          // Normalización limpia para el código de ubicación
           const aisleClean = aisle
             .replace(/\s+/g, '-')
             .replace(/\./g, '')
             .toUpperCase();
           const code = `${aisleClean}-RACK-${rack}-POS-${pos}`;
 
-          // Observación ejemplo para Chile 2 en pasillo F
           let notes: string | null = null;
           if (whCode === 'CHILE-2' && aisle === 'pas. F') {
             notes = 'Enfrente del baño';
           }
 
-          await prisma.location.upsert({
+          const createdLoc = await prisma.location.upsert({
             where: {
               warehouseId_code: {
                 warehouseId: whId,
@@ -124,6 +139,11 @@ async function main() {
               notes: notes,
             },
           });
+
+          if (!firstLocationId && whCode === 'CHILE-1') {
+            firstLocationId = createdLoc.id;
+          }
+
           totalLocationsCreated++;
         }
       }
@@ -133,6 +153,47 @@ async function main() {
   console.log(
     `✅ ${totalLocationsCreated} Ubicaciones físicas generadas con éxito.`,
   );
+
+  // ==========================================
+  // 4. PRODUCTO REAL Y CARGA DE INVENTARIO (US582)
+  // ==========================================
+  const mainWarehouseId = warehousesMap.get('CHILE-1');
+
+  if (mainWarehouseId && firstLocationId) {
+    const product = await prisma.product.upsert({
+      where: { sku: 'US582' },
+      update: {},
+      create: {
+        sku: 'US582',
+        name: 'Bebedero mascotas',
+        unitsPerBox: 50, // QTY 50 unidades por bulto cerrado
+        unitPrice: 3500.0,
+        weightKg: 10.0, // G.W 10kg por bulto cerrado
+        volumeM3: 0.0889, // Medidas 47x43x44cm (~0.0889 m³)
+      },
+    });
+
+    await prisma.inventory.upsert({
+      where: {
+        locationId_productId_lotNumber: {
+          locationId: firstLocationId,
+          productId: product.id,
+          lotNumber: 'LOTE-2026-01',
+        },
+      },
+      update: { quantity: 200 },
+      create: {
+        warehouseId: mainWarehouseId,
+        locationId: firstLocationId,
+        productId: product.id,
+        lotNumber: 'LOTE-2026-01',
+        quantity: 200, // 200 bultos cerrados en stock inicial
+      },
+    });
+
+    console.log('✅ Producto US582 e Inventario inicial cargados en Chile 1.');
+  }
+
   console.log('🚀 Seeding completado exitosamente.');
 }
 
