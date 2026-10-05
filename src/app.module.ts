@@ -5,6 +5,7 @@ import { CustomersModule } from './customers/customers.module';
 import { OrdersModule } from './orders/orders.module';
 import { TransportsModule } from './transports/transports.module';
 import { AuthModule } from './auth/auth.module';
+import { RoutesModule } from './routes/routes.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
@@ -16,6 +17,7 @@ import { AppService } from './app.service';
     OrdersModule,
     TransportsModule,
     AuthModule,
+    RoutesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

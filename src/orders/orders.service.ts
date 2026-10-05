@@ -26,7 +26,6 @@ export class OrdersService {
       items,
     } = createOrderDto;
 
-    // 1. Validar unicidad del número de pedido (Presupuesto)
     const existingOrder = await this.prisma.order.findFirst({
       where: { orderNumber },
     });
@@ -37,7 +36,6 @@ export class OrdersService {
       );
     }
 
-    // 2. Validar cliente y dirección de entrega asignada
     const customer = await this.prisma.customer.findUnique({
       where: { id: customerId },
       include: { addresses: true },
@@ -56,7 +54,6 @@ export class OrdersService {
       );
     }
 
-    // 3. Validar depósito de origen
     const warehouse = await this.prisma.warehouse.findUnique({
       where: { id: sourceWarehouseId },
     });
@@ -67,8 +64,9 @@ export class OrdersService {
       );
     }
 
-    // 4. Calcular bultos e ítems (unidades totales = bultos * unidades por caja del producto)
     let totalBultos = 0;
+    let totalWeightKg = 0;
+
     const preparedItems = await Promise.all(
       items.map(async (item: CreateOrderItemDto) => {
         const product = await this.prisma.product.findUnique({
@@ -82,7 +80,10 @@ export class OrdersService {
         }
 
         const totalUnits = item.bultos * product.unitsPerBox;
+        const itemWeight = Number(product.weightKg) * totalUnits;
+
         totalBultos += item.bultos;
+        totalWeightKg += itemWeight;
 
         return {
           productId: item.productId,
@@ -93,7 +94,6 @@ export class OrdersService {
       }),
     );
 
-    // 5. Crear el pedido con la estructura exacta del esquema actualizado
     return this.prisma.order.create({
       data: {
         orderNumber,
@@ -108,6 +108,7 @@ export class OrdersService {
         deliveryDateFrom: deliveryDateFrom ? new Date(deliveryDateFrom) : null,
         deliveryDateTo: deliveryDateTo ? new Date(deliveryDateTo) : null,
         totalBultos,
+        totalWeightKg,
         items: {
           create: preparedItems,
         },
@@ -123,15 +124,7 @@ export class OrdersService {
         transport: true,
         items: {
           include: {
-            product: {
-              include: {
-                inventories: {
-                  include: {
-                    location: true,
-                  },
-                },
-              },
-            },
+            product: true,
           },
         },
       },
@@ -172,6 +165,13 @@ export class OrdersService {
                     location: true,
                   },
                 },
+              },
+            },
+            picker: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
               },
             },
           },

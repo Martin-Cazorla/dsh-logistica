@@ -39,8 +39,13 @@ export class PickingController {
   @Roles(UserRole.PICKER, UserRole.WAREHOUSE_MANAGER, UserRole.ADMIN)
   async confirmPicking(
     @Param('id', new ParseUUIDPipe()) orderId: string,
+    @GetUser('id') currentUserId: string,
     @Body() processPickingDto: ProcessPickingDto,
   ) {
-    return this.pickingService.confirmPicking(orderId, processPickingDto);
+    return this.pickingService.confirmPicking(
+      orderId,
+      currentUserId,
+      processPickingDto,
+    );
   }
 }

@@ -5,14 +5,14 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { ProcessPickingDto, PickItemDto } from '../dto/picking-order.dto';
+import { ProcessPickingDto } from '../dto/picking-order.dto';
 
 @Injectable()
 export class PickingService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Asigna un pedido a un Picker y cambia su estado a IN_PICKING
+   * Asigna un pedido a un Picker principal e inicia estado IN_PICKING
    */
   async assignAndStartPicking(orderId: string, pickerId: string) {
     const order = await this.prisma.order.findUnique({
@@ -54,20 +54,11 @@ export class PickingService {
             id: true,
             firstName: true,
             lastName: true,
-            email: true,
           },
         },
         items: {
           include: {
-            product: {
-              include: {
-                inventories: {
-                  include: {
-                    location: true,
-                  },
-                },
-              },
-            },
+            product: true,
           },
         },
       },
@@ -75,9 +66,13 @@ export class PickingService {
   }
 
   /**
-   * Procesa la confirmación del picking descontando stock e inventario en una transacción ACID
+   * Procesa el pickeo registrando al usuario específico que tomó cada ítem
    */
-  async confirmPicking(orderId: string, processPickingDto: ProcessPickingDto) {
+  async confirmPicking(
+    orderId: string,
+    currentUserId: string,
+    processPickingDto: ProcessPickingDto,
+  ) {
     const { pickedItems } = processPickingDto;
 
     const order = await this.prisma.order.findUnique({
@@ -97,7 +92,6 @@ export class PickingService {
       );
     }
 
-    // Ejecutamos la reducción de stock físico en una transacción atómica atómica ACID
     return this.prisma.$transaction(async (tx) => {
       for (const item of pickedItems) {
         const inventory = await tx.inventory.findFirst({
@@ -114,7 +108,6 @@ export class PickingService {
           );
         }
 
-        // Descontamos el stock físico
         await tx.inventory.update({
           where: { id: inventory.id },
           data: {
@@ -122,7 +115,6 @@ export class PickingService {
           },
         });
 
-        // Actualizamos la cantidad pickeada en la orden
         const orderItem = order.items.find(
           (i) => i.productId === item.productId,
         );
@@ -131,12 +123,12 @@ export class PickingService {
             where: { id: orderItem.id },
             data: {
               pickedQty: { increment: item.bultos },
+              pickerId: currentUserId, // Registra qué armador procesó este ítem puntual
             },
           });
         }
       }
 
-      // Actualizamos estado del pedido a PICKED
       return tx.order.update({
         where: { id: orderId },
         data: {
@@ -147,6 +139,13 @@ export class PickingService {
           items: {
             include: {
               product: true,
+              picker: {
+                select: {
+                  id: true,
+                  firstName: true,
+                  lastName: true,
+                },
+              },
             },
           },
         },
@@ -154,33 +153,21 @@ export class PickingService {
     });
   }
 
-  /**
-   * Obtiene la lista de pedidos asignados al picker autenticado actual
-   */
   async getMyPendingPickings(pickerId: string) {
     return this.prisma.order.findMany({
       where: {
-        pickerId,
-        status: 'IN_PICKING',
+        OR: [
+          { pickerId },
+          { items: { some: { pickerId } } },
+          { status: 'IN_PICKING' },
+        ],
       },
       include: {
-        customer: {
-          include: {
-            addresses: true,
-          },
-        },
+        customer: true,
         deliveryAddress: true,
         items: {
           include: {
-            product: {
-              include: {
-                inventories: {
-                  include: {
-                    location: true,
-                  },
-                },
-              },
-            },
+            product: true,
           },
         },
       },
