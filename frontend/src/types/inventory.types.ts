@@ -8,10 +8,10 @@ export interface PhysicalLocation {
   id: string;
   warehouseId: string;
   warehouseName?: string;
-  code: string; // Ej: "RACK-SUD-A12", "PASILLO-DEV-B04", "TECHO-OFI-A01"
+  code: string;
   category: LocationTypeCategory;
   zoneName: string;
-  rackLevel?: string; // "A", "B", "C", "D"
+  rackLevel?: string;
   moduleNumber?: number;
   maxCapacityM3: number;
   usedCapacityM3: number;
@@ -26,8 +26,8 @@ export interface WarehouseOccupancy {
   address?: string;
   totalCapacityM3: number;
   usedCapacityM3: number;
-  occupancyPercentage: number; // Puede superar el 100% si hay ubicaciones provisorias
-  isOverloaded: boolean; // Indique si supera el 100%
+  occupancyPercentage: number;
+  isOverloaded: boolean;
   totalLocations: number;
   occupiedLocations: number;
   locations: PhysicalLocation[];
@@ -95,17 +95,14 @@ export interface CreateWarehouseDto {
   address?: string;
 }
 
-/**
- * DTO para la generación masiva inteligente por rangos
- */
 export interface GenerateBatchLocationsDto {
   warehouseId: string;
   category: LocationTypeCategory;
-  areaName: string; // Ej. "Rack Pared Sur", "Pasillo Devoluciones", "Techo Generador"
-  levels: string[]; // Ej. ["A", "B", "C", "D"]
-  positionStart: number; // Ej. 1
-  positionEnd: number; // Ej. 84
-  maxCapacityM3PerUnit: number; // Ej. 2.5
+  areaName: string;
+  levels: string[];
+  positionStart: number;
+  positionEnd: number;
+  maxCapacityM3PerUnit: number;
 }
 
 export interface MoveStockDto {

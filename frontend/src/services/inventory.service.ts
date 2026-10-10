@@ -68,4 +68,8 @@ export const inventoryService = {
   async deleteLocationsBatch(locationIds: string[]): Promise<void> {
     await api.post('/inventory/locations/delete-batch', { locationIds });
   },
+
+  async clearAllData(): Promise<void> {
+    await api.post('/inventory/clear-all');
+  },
 };

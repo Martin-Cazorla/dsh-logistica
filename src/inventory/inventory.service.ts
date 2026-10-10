@@ -12,6 +12,9 @@ import { TransferStockDto } from './dto/transfer-stock.dto';
 export class InventoryService {
   constructor(private readonly prisma: PrismaService) {}
 
+  /**
+   * Resumen de Ocupación por Depósitos con Cálculo de Sobreexigencia (>100%)
+   */
   async getOccupancySummary() {
     const warehouses = await this.prisma.warehouse.findMany({
       include: {
@@ -78,7 +81,6 @@ export class InventoryService {
         (l) => l.usedCapacityM3 > 0,
       ).length;
 
-      // Cálculo de Porcentaje Total con margen para Sobreexigencia (>100%)
       const occupancyPercentage =
         totalCapacityM3 > 0
           ? Math.round((usedCapacityM3 / totalCapacityM3) * 100)
@@ -187,7 +189,9 @@ export class InventoryService {
     if (!effectiveUserId) {
       const defaultUser = await this.prisma.user.findFirst();
       if (!defaultUser)
-        throw new BadRequestException('No hay usuarios en el sistema.');
+        throw new BadRequestException(
+          'No hay usuarios registrados en el sistema.',
+        );
       effectiveUserId = defaultUser.id;
     }
 
@@ -265,7 +269,9 @@ export class InventoryService {
       });
 
       if (!sourceInv || sourceInv.quantity < quantityBultosToMove) {
-        throw new BadRequestException('Cantidad insuficiente.');
+        throw new BadRequestException(
+          'Cantidad insuficiente en la posición de origen.',
+        );
       }
 
       if (sourceInv.quantity === quantityBultosToMove) {
@@ -311,7 +317,9 @@ export class InventoryService {
       });
 
       if (!sourceInv || sourceInv.quantity < dto.quantity) {
-        throw new BadRequestException('Stock insuficiente en origen.');
+        throw new BadRequestException(
+          'Stock insuficiente en depósito de origen.',
+        );
       }
 
       await tx.inventory.update({
@@ -337,7 +345,9 @@ export class InventoryService {
         });
 
         if (!defaultLocation)
-          throw new BadRequestException('Sin ubicación de destino.');
+          throw new BadRequestException(
+            'El depósito destino no posee ubicaciones.',
+          );
 
         await tx.inventory.create({
           data: {
@@ -392,9 +402,6 @@ export class InventoryService {
     });
   }
 
-  /**
-   * Generador Inteligente por Rangos y Múltiples Niveles
-   */
   async generateLocationsBatch(dto: {
     warehouseId: string;
     category: 'RACK' | 'PASILLO' | 'TECHO';
@@ -415,10 +422,13 @@ export class InventoryService {
     } = dto;
     const locationsToCreate = [];
 
-    const cleanArea = areaName.replace(/\s+/g, '-').toUpperCase();
+    const cleanArea = (areaName || 'GENERAL')
+      .replace(/\s+/g, '-')
+      .toUpperCase();
+    const capacityVal = Number(maxCapacityM3PerUnit) || 2.5;
 
     for (const level of levels) {
-      for (let pos = positionStart; pos <= positionEnd; pos++) {
+      for (let pos = Number(positionStart); pos <= Number(positionEnd); pos++) {
         let code = '';
         if (category === 'RACK') {
           code = `RACK-${cleanArea}-${level}${pos}`;
@@ -431,10 +441,10 @@ export class InventoryService {
         locationsToCreate.push({
           warehouseId,
           code,
-          aisle: areaName,
+          aisle: areaName || 'General',
           rack: level,
-          position: String(pos),
-          capacity: maxCapacityM3PerUnit,
+          position: String(pos), // Prisma exige tipo String
+          capacity: capacityVal,
         });
       }
     }
@@ -457,6 +467,18 @@ export class InventoryService {
 
     return this.prisma.location.deleteMany({
       where: { id: { in: locationIds } },
+    });
+  }
+
+  async clearAllInventoryData() {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.stockMovement.deleteMany({});
+      await tx.inventory.deleteMany({});
+      await tx.location.deleteMany({});
+      await tx.warehouse.deleteMany({});
+      return {
+        message: 'Todos los datos de inventario y depósitos fueron eliminados.',
+      };
     });
   }
 }

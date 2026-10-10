@@ -99,4 +99,10 @@ export class InventoryController {
   async deleteLocationsBatch(@Body() body: { locationIds: string[] }) {
     return this.inventoryService.deleteLocationsBatch(body.locationIds);
   }
+
+  @Post('clear-all')
+  @Roles('ADMIN')
+  async clearAllInventoryData() {
+    return this.inventoryService.clearAllInventoryData();
+  }
 }
