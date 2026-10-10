@@ -7,12 +7,11 @@ import {
   ReceiveContainerDto,
   MoveStockDto,
   PhysicalLocation,
+  CreateWarehouseDto,
+  GenerateBatchLocationsDto,
 } from '@/types/inventory.types';
 
 export const inventoryService = {
-  /**
-   * Obtiene la ocupación física por depósitos y pasillos.
-   */
   async getWarehouseOccupancy(): Promise<WarehouseOccupancy[]> {
     const response = await api.get<WarehouseOccupancy[]>(
       '/inventory/occupancy',
@@ -20,9 +19,13 @@ export const inventoryService = {
     return response.data;
   },
 
-  /**
-   * Obtiene el listado completo de bultos/stock en depósito.
-   */
+  async getWarehousesList(): Promise<{ id: string; name: string }[]> {
+    const response = await api.get<{ id: string; name: string }[]>(
+      '/inventory/warehouses',
+    );
+    return response.data;
+  },
+
   async getStockList(
     warehouseId?: string,
     search?: string,
@@ -33,23 +36,14 @@ export const inventoryService = {
     return response.data;
   },
 
-  /**
-   * Registra el ingreso de mercadería/contenedor (Inbound) y asigna ubicaciones.
-   */
   async receiveContainer(data: ReceiveContainerDto): Promise<void> {
     await api.post('/inventory/inbound/receive', data);
   },
 
-  /**
-   * Realiza la relocalización interna de bultos entre posiciones físicas.
-   */
   async moveStock(data: MoveStockDto): Promise<void> {
     await api.patch('/inventory/stock/move', data);
   },
 
-  /**
-   * Obtiene la lista de ubicaciones físicas disponibles.
-   */
   async getAvailableLocations(
     warehouseId: string,
   ): Promise<PhysicalLocation[]> {
@@ -57,5 +51,21 @@ export const inventoryService = {
       `/inventory/locations/${warehouseId}`,
     );
     return response.data;
+  },
+
+  async createWarehouse(data: CreateWarehouseDto): Promise<void> {
+    await api.post('/inventory/warehouses', data);
+  },
+
+  async deleteWarehouse(warehouseId: string): Promise<void> {
+    await api.delete(`/inventory/warehouses/${warehouseId}`);
+  },
+
+  async generateBatchLocations(data: GenerateBatchLocationsDto): Promise<void> {
+    await api.post('/inventory/locations/generate-batch', data);
+  },
+
+  async deleteLocationsBatch(locationIds: string[]): Promise<void> {
+    await api.post('/inventory/locations/delete-batch', { locationIds });
   },
 };

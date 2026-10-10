@@ -1,21 +1,18 @@
 // frontend/src/types/inventory.types.ts
 
-/**
- * Estado de ocupación física de una ubicación o pasillo.
- */
-export type LocationStatus = 'DISPONIBLE' | 'PARCIAL' | 'COMPLETO';
+export type LocationTypeCategory = 'RACK' | 'PASILLO' | 'TECHO';
+export type LocationStatus =
+  'DISPONIBLE' | 'PARCIAL' | 'COMPLETO' | 'SOBREEXIGIDO';
 
-/**
- * Ubicación física dentro de un depósito.
- */
 export interface PhysicalLocation {
   id: string;
   warehouseId: string;
-  warehouseName: string;
-  code: string; // Ej: "PAS-F-RACK-B2"
-  aisle: string; // Ej: "Pasillo F"
-  rack: string; // Ej: "Rack B"
-  level: string; // Ej: "Nivel 2"
+  warehouseName?: string;
+  code: string; // Ej: "RACK-SUD-A12", "PASILLO-DEV-B04", "TECHO-OFI-A01"
+  category: LocationTypeCategory;
+  zoneName: string;
+  rackLevel?: string; // "A", "B", "C", "D"
+  moduleNumber?: number;
   maxCapacityM3: number;
   usedCapacityM3: number;
   occupancyPercentage: number;
@@ -23,23 +20,19 @@ export interface PhysicalLocation {
   comments?: string;
 }
 
-/**
- * Resumen de ocupación por Depósito.
- */
 export interface WarehouseOccupancy {
   id: string;
   name: string;
+  address?: string;
   totalCapacityM3: number;
   usedCapacityM3: number;
-  occupancyPercentage: number;
+  occupancyPercentage: number; // Puede superar el 100% si hay ubicaciones provisorias
+  isOverloaded: boolean; // Indique si supera el 100%
   totalLocations: number;
   occupiedLocations: number;
   locations: PhysicalLocation[];
 }
 
-/**
- * Registro de un bulto/producto en inventario.
- */
 export interface InventoryStock {
   id: string;
   productId: string;
@@ -51,33 +44,35 @@ export interface InventoryStock {
   warehouseName: string;
   locationId: string;
   locationCode: string;
-  locationAisle: string;
   quantityBultos: number;
   weightPerBultoKg: number;
   volumePerBultoM3: number;
+  lengthCm?: number;
+  widthCm?: number;
+  heightCm?: number;
   totalWeightKg: number;
   totalVolumeM3: number;
   updatedAt: string;
 }
 
-/**
- * Item de Packing List para Inbound.
- */
 export interface PackingListItem {
   id?: string;
   productSku: string;
   productName: string;
   eanCode?: string;
   quantityBultosExpected: number;
-  quantityBultosReceived?: number;
   weightPerBultoKg: number;
+  lengthCm: number;
+  widthCm: number;
+  heightCm: number;
   volumePerBultoM3: number;
+  category: LocationTypeCategory;
+  zoneName: string;
+  rackLevel?: string;
+  moduleNumber?: number;
   locationId?: string;
 }
 
-/**
- * DTO para la carga e ingreso de Inbound/Contenedor.
- */
 export interface ReceiveContainerDto {
   containerNumber?: string;
   warehouseId: string;
@@ -87,14 +82,32 @@ export interface ReceiveContainerDto {
     eanCode?: string;
     quantityBultos: number;
     weightPerBultoKg: number;
+    lengthCm?: number;
+    widthCm?: number;
+    heightCm?: number;
     volumePerBultoM3: number;
     locationId: string;
   }[];
 }
 
+export interface CreateWarehouseDto {
+  name: string;
+  address?: string;
+}
+
 /**
- * DTO para la relocalización (mover stock).
+ * DTO para la generación masiva inteligente por rangos
  */
+export interface GenerateBatchLocationsDto {
+  warehouseId: string;
+  category: LocationTypeCategory;
+  areaName: string; // Ej. "Rack Pared Sur", "Pasillo Devoluciones", "Techo Generador"
+  levels: string[]; // Ej. ["A", "B", "C", "D"]
+  positionStart: number; // Ej. 1
+  positionEnd: number; // Ej. 84
+  maxCapacityM3PerUnit: number; // Ej. 2.5
+}
+
 export interface MoveStockDto {
   inventoryStockId: string;
   targetLocationId: string;

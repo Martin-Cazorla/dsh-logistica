@@ -9,45 +9,65 @@ import {
   WarehouseOccupancy,
   InventoryStock,
   PackingListItem,
-  MoveStockDto,
   PhysicalLocation,
+  LocationTypeCategory,
 } from '@/types/inventory.types';
 
 export default function InventoryPage() {
-  const [activeTab, setActiveTab] = useState<'MALLA' | 'INBOUND' | 'STOCK'>(
-    'MALLA',
-  );
+  const [activeTab, setActiveTab] = useState<
+    'MALLA' | 'INBOUND' | 'STOCK' | 'CONFIG'
+  >('MALLA');
   const [warehouses, setWarehouses] = useState<WarehouseOccupancy[]>([]);
+  const [simpleWarehousesList, setSimpleWarehousesList] = useState<
+    { id: string; name: string }[]
+  >([]);
   const [stockList, setStockList] = useState<InventoryStock[]>([]);
-  const [selectedWarehouseId, setSelectedWarehouseId] = useState<string>('');
   const [locations, setLocations] = useState<PhysicalLocation[]>([]);
 
-  // Estado para búsqueda y filtro
-  const [searchTerm, setSearchTerm] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
-  // Estados del Formulario Inbound / Packing List
+  // Filtros Malla
+  const [filterWarehouseId, setFilterWarehouseId] = useState<string>('ALL');
+  const [filterCategory, setFilterCategory] = useState<string>('ALL');
+  const [filterOccupancyStatus, setFilterOccupancyStatus] =
+    useState<string>('ALL');
+
+  // Inbound
   const [containerNumber, setContainerNumber] = useState<string>('');
   const [inboundWarehouseId, setInboundWarehouseId] = useState<string>('');
   const [packingList, setPackingList] = useState<PackingListItem[]>([
     {
       productSku: '',
       productName: '',
-      eanCode: '',
       quantityBultosExpected: 1,
       weightPerBultoKg: 10,
-      volumePerBultoM3: 0.1,
+      lengthCm: 40,
+      widthCm: 30,
+      heightCm: 30,
+      volumePerBultoM3: 0.036,
+      category: 'RACK',
+      zoneName: 'Rack Principal',
+      rackLevel: 'A',
+      moduleNumber: 1,
       locationId: '',
     },
   ]);
 
-  // Estados de Relocalización (Mover Stock)
-  const [selectedStockToMove, setSelectedStockToMove] =
-    useState<InventoryStock | null>(null);
-  const [targetLocationId, setTargetLocationId] = useState<string>('');
-  const [qtyToMove, setQtyToMove] = useState<number>(1);
+  // Generador Masivo Inteligente
+  const [targetConfigWhId, setTargetConfigWhId] = useState<string>('');
+  const [genCategory, setGenCategory] = useState<LocationTypeCategory>('RACK');
+  const [genAreaName, setGenAreaName] = useState<string>('Rack Principal');
+  const [genLevelsInput, setGenLevelsInput] = useState<string>('A, B, C, D');
+  const [genPosStart, setGenPosStart] = useState<number>(1);
+  const [genPosEnd, setGenPosEnd] = useState<number>(84);
+  const [genCapacityM3, setGenCapacityM3] = useState<number>(2.5);
+
+  // Borrado Masivo
+  const [selectedLocIdsForDelete, setSelectedLocIdsForDelete] = useState<
+    string[]
+  >([]);
   const [submitting, setSubmitting] = useState<boolean>(false);
 
   useEffect(() => {
@@ -60,23 +80,32 @@ export default function InventoryPage() {
     }
   }, [inboundWarehouseId]);
 
+  useEffect(() => {
+    if (targetConfigWhId) {
+      loadLocationsForWarehouse(targetConfigWhId);
+    }
+  }, [targetConfigWhId]);
+
   const loadData = async () => {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const [whData, stData] = await Promise.all([
+      const [whData, whList, stData] = await Promise.all([
         inventoryService.getWarehouseOccupancy(),
+        inventoryService.getWarehousesList(),
         inventoryService.getStockList(),
       ]);
       setWarehouses(whData);
+      setSimpleWarehousesList(whList);
       setStockList(stData);
-      if (whData.length > 0 && !inboundWarehouseId) {
-        setInboundWarehouseId(whData[0].id);
+
+      if (whList.length > 0) {
+        if (!inboundWarehouseId) setInboundWarehouseId(whList[0].id);
+        if (!targetConfigWhId) setTargetConfigWhId(whList[0].id);
       }
     } catch (err: any) {
       setErrorMsg(
-        err.response?.data?.message ||
-          'Error al cargar los datos de inventario.',
+        err.response?.data?.message || 'Error al conectar con el backend.',
       );
     } finally {
       setLoading(false);
@@ -87,27 +116,13 @@ export default function InventoryPage() {
     try {
       const locs = await inventoryService.getAvailableLocations(whId);
       setLocations(locs);
+      setSelectedLocIdsForDelete([]);
     } catch (err) {
       console.error('Error al cargar ubicaciones:', err);
     }
   };
 
-  // --- MÉTODOS DE INBOUND / PACKING LIST ---
-  const handleAddPackingItem = () => {
-    setPackingList((prev) => [
-      ...prev,
-      {
-        productSku: '',
-        productName: '',
-        eanCode: '',
-        quantityBultosExpected: 1,
-        weightPerBultoKg: 10,
-        volumePerBultoM3: 0.1,
-        locationId: '',
-      },
-    ]);
-  };
-
+  // --- CÁLCULO VOLUMEN Y SELECCIÓN CASCADA ---
   const handleUpdatePackingItem = (
     index: number,
     field: keyof PackingListItem,
@@ -115,31 +130,75 @@ export default function InventoryPage() {
   ) => {
     setPackingList((prev) => {
       const updated = [...prev];
-      updated[index] = { ...updated[index], [field]: value };
+      const item = { ...updated[index], [field]: value };
+
+      if (field === 'lengthCm' || field === 'widthCm' || field === 'heightCm') {
+        const l = field === 'lengthCm' ? Number(value) : item.lengthCm;
+        const w = field === 'widthCm' ? Number(value) : item.widthCm;
+        const h = field === 'heightCm' ? Number(value) : item.heightCm;
+        item.volumePerBultoM3 = Number(((l * w * h) / 1000000).toFixed(4));
+      }
+
+      if (
+        ['category', 'zoneName', 'rackLevel', 'moduleNumber'].includes(field)
+      ) {
+        const matchingLoc = locations.find((l) => {
+          if (item.category === 'RACK') {
+            return (
+              l.category === 'RACK' &&
+              l.rackLevel === item.rackLevel &&
+              l.moduleNumber === Number(item.moduleNumber)
+            );
+          }
+          return (
+            l.category === item.category &&
+            l.zoneName.toLowerCase() === item.zoneName.toLowerCase()
+          );
+        });
+        item.locationId = matchingLoc ? matchingLoc.id : '';
+      }
+
+      updated[index] = item;
       return updated;
     });
   };
 
-  const handleRemovePackingItem = (index: number) => {
-    setPackingList((prev) => prev.filter((_, i) => i !== index));
+  const handleAddPackingItem = () => {
+    setPackingList((prev) => [
+      ...prev,
+      {
+        productSku: '',
+        productName: '',
+        quantityBultosExpected: 1,
+        weightPerBultoKg: 10,
+        lengthCm: 40,
+        widthCm: 30,
+        heightCm: 30,
+        volumePerBultoM3: 0.036,
+        category: 'RACK',
+        zoneName: 'Rack Principal',
+        rackLevel: 'A',
+        moduleNumber: 1,
+        locationId: '',
+      },
+    ]);
   };
 
   const handleConfirmInbound = async () => {
     if (!inboundWarehouseId) {
-      setErrorMsg('Debe seleccionar el depósito de destino.');
+      setErrorMsg('Debe seleccionar un depósito.');
       return;
     }
 
-    // Validar que todos los ítems tengan SKU, Nombre y Ubicación asignada
     for (let i = 0; i < packingList.length; i++) {
       const item = packingList[i];
       if (!item.productSku || !item.productName) {
-        setErrorMsg(`El ítem #${i + 1} debe incluir SKU y Nombre de Producto.`);
+        setErrorMsg(`Falta SKU o Nombre en la línea #${i + 1}.`);
         return;
       }
       if (!item.locationId) {
         setErrorMsg(
-          `Debe asignar una Ubicación Física para el ítem #${i + 1} (${item.productName}).`,
+          `La ubicación seleccionada en la línea #${i + 1} no existe en el catálogo.`,
         );
         return;
       }
@@ -155,10 +214,11 @@ export default function InventoryPage() {
         productSku: item.productSku,
         productName: item.productName,
         eanCode: item.eanCode?.trim() || undefined,
-        quantityBultos: Number(
-          item.quantityBultosReceived ?? item.quantityBultosExpected,
-        ),
+        quantityBultos: Number(item.quantityBultosExpected),
         weightPerBultoKg: Number(item.weightPerBultoKg),
+        lengthCm: Number(item.lengthCm),
+        widthCm: Number(item.widthCm),
+        heightCm: Number(item.heightCm),
         volumePerBultoM3: Number(item.volumePerBultoM3),
         locationId: item.locationId!,
       })),
@@ -166,89 +226,132 @@ export default function InventoryPage() {
 
     try {
       await inventoryService.receiveContainer(payload);
-      setSuccessMsg(
-        'Ingreso de mercadería y asignación de ubicaciones completado con éxito.',
-      );
+      setSuccessMsg('Mercadería estibada correctamente.');
       setContainerNumber('');
-      setPackingList([
-        {
-          productSku: '',
-          productName: '',
-          eanCode: '',
-          quantityBultosExpected: 1,
-          weightPerBultoKg: 10,
-          volumePerBultoM3: 0.1,
-          locationId: '',
-        },
-      ]);
       await loadData();
     } catch (err: any) {
       setErrorMsg(
-        err.response?.data?.message ||
-          'Error al procesar el ingreso de mercadería.',
+        err.response?.data?.message || 'Error al procesar el ingreso.',
       );
     } finally {
       setSubmitting(false);
     }
   };
 
-  // --- MÉTODOS DE RELOCALIZACIÓN (MOVER STOCK) ---
-  const handleOpenMoveModal = (stock: InventoryStock) => {
-    setSelectedStockToMove(stock);
-    setQtyToMove(1);
-    setTargetLocationId('');
-    loadLocationsForWarehouse(stock.warehouseId);
-  };
-
-  const handleConfirmMoveStock = async () => {
-    if (!selectedStockToMove || !targetLocationId) {
-      setErrorMsg('Seleccione una ubicación de destino válida.');
+  // --- GENERACIÓN MASIVA INTELEGIENTE ---
+  const handleGenerateBatch = async () => {
+    if (!targetConfigWhId) {
+      setErrorMsg('Seleccione un depósito.');
       return;
     }
-    if (qtyToMove <= 0 || qtyToMove > selectedStockToMove.quantityBultos) {
-      setErrorMsg(
-        `La cantidad a mover debe estar entre 1 y ${selectedStockToMove.quantityBultos} bultos.`,
-      );
+    const levels = genLevelsInput
+      .split(',')
+      .map((l) => l.trim().toUpperCase())
+      .filter(Boolean);
+    if (levels.length === 0) {
+      setErrorMsg('Especifique al menos un nivel/letra (ej. A, B, C, D).');
+      return;
+    }
+    if (genPosStart > genPosEnd) {
+      setErrorMsg('La posición inicial no puede ser mayor a la final.');
       return;
     }
 
     setSubmitting(true);
     setErrorMsg(null);
 
-    const payload: MoveStockDto = {
-      inventoryStockId: selectedStockToMove.id,
-      targetLocationId,
-      quantityBultosToMove: qtyToMove,
-    };
-
     try {
-      await inventoryService.moveStock(payload);
-      setSuccessMsg(
-        `MovidOS ${qtyToMove} bultos a la nueva posición exitosamente.`,
-      );
-      setSelectedStockToMove(null);
+      await inventoryService.generateBatchLocations({
+        warehouseId: targetConfigWhId,
+        category: genCategory,
+        areaName: genAreaName.trim(),
+        levels,
+        positionStart: Number(genPosStart),
+        positionEnd: Number(genPosEnd),
+        maxCapacityM3PerUnit: Number(genCapacityM3),
+      });
+      setSuccessMsg('Generación masiva de ubicaciones completada.');
       await loadData();
     } catch (err: any) {
-      setErrorMsg(err.response?.data?.message || 'Error al mover el stock.');
+      setErrorMsg(
+        err.response?.data?.message ||
+          'Error al generar el lote de ubicaciones.',
+      );
     } finally {
       setSubmitting(false);
     }
   };
 
-  // Filtrar el stock mostrado
-  const filteredStock = stockList.filter((item) => {
-    const matchesSearch =
-      item.productName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      item.productSku.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      item.locationCode.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (item.containerNumber &&
-        item.containerNumber.toLowerCase().includes(searchTerm.toLowerCase()));
+  // --- BORRADO MASIVO & DEPÓSITO COMPLETO ---
+  const toggleSelectLocForDelete = (locId: string) => {
+    setSelectedLocIdsForDelete((prev) =>
+      prev.includes(locId)
+        ? prev.filter((id) => id !== locId)
+        : [...prev, locId],
+    );
+  };
 
-    const matchesWarehouse = selectedWarehouseId
-      ? item.warehouseId === selectedWarehouseId
-      : true;
-    return matchesSearch && matchesWarehouse;
-  });
+  const handleSelectAllLocsForDelete = () => {
+    if (selectedLocIdsForDelete.length === locations.length) {
+      setSelectedLocIdsForDelete([]);
+    } else {
+      setSelectedLocIdsForDelete(locations.map((l) => l.id));
+    }
+  };
+
+  const handleDeleteSelectedLocations = async () => {
+    if (selectedLocIdsForDelete.length === 0) return;
+    if (
+      !confirm(
+        `¿Confirma eliminar las ${selectedLocIdsForDelete.length} ubicaciones seleccionadas?`,
+      )
+    )
+      return;
+
+    setSubmitting(true);
+    try {
+      await inventoryService.deleteLocationsBatch(selectedLocIdsForDelete);
+      setSuccessMsg('Ubicaciones eliminadas en lote.');
+      setSelectedLocIdsForDelete([]);
+      await loadData();
+    } catch (err: any) {
+      setErrorMsg(
+        err.response?.data?.message ||
+          'No se pueden eliminar ubicaciones que poseen stock.',
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleDeleteFullWarehouse = async () => {
+    if (!targetConfigWhId) return;
+    const wh = simpleWarehousesList.find((w) => w.id === targetConfigWhId);
+    if (
+      !confirm(
+        `⚠️ ¿ATENCIÓN: Confirma eliminar el depósito "${wh?.name}" y TODAS sus ubicaciones?`,
+      )
+    )
+      return;
+
+    setSubmitting(true);
+    try {
+      await inventoryService.deleteWarehouse(targetConfigWhId);
+      setSuccessMsg(`Depósito ${wh?.name} eliminado completamente.`);
+      await loadData();
+    } catch (err: any) {
+      setErrorMsg(
+        err.response?.data?.message ||
+          'No se puede eliminar un depósito con stock activo.',
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const filteredWarehouses = warehouses.filter((wh) =>
+    filterWarehouseId === 'ALL' ? true : wh.id === filterWarehouseId,
+  );
 
   return (
     <ProtectedRoute allowedRoles={['ADMIN', 'WAREHOUSE_MANAGER', 'PICKER']}>
@@ -260,16 +363,15 @@ export default function InventoryPage() {
               Gestión de Inventario & Ocupación Física
             </h1>
             <p className="text-xs sm:text-sm text-slate-400">
-              Control de bultos cerrados, contenedores, relocalización y mapa de
-              depósitos
+              Generación inteligente, cálculo de sobrecapacidad (&gt;100%) y
+              mantenimiento en lote
             </p>
           </div>
 
-          {/* Navegación por Pestañas */}
-          <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800">
+          <div className="flex flex-wrap bg-slate-950 p-1 rounded-xl border border-slate-800 gap-1">
             <button
               onClick={() => setActiveTab('MALLA')}
-              className={`px-4 py-2 rounded-lg text-xs sm:text-sm font-bold transition-all ${
+              className={`px-3 py-2 rounded-lg text-xs font-bold transition-all ${
                 activeTab === 'MALLA'
                   ? 'bg-amber-500 text-slate-950 shadow-md'
                   : 'text-slate-400 hover:text-white'
@@ -279,23 +381,33 @@ export default function InventoryPage() {
             </button>
             <button
               onClick={() => setActiveTab('INBOUND')}
-              className={`px-4 py-2 rounded-lg text-xs sm:text-sm font-bold transition-all ${
+              className={`px-3 py-2 rounded-lg text-xs font-bold transition-all ${
                 activeTab === 'INBOUND'
                   ? 'bg-amber-500 text-slate-950 shadow-md'
                   : 'text-slate-400 hover:text-white'
               }`}
             >
-              🚢 Ingreso Contenedor / Inbound
+              🚢 Ingreso Contenedor
             </button>
             <button
               onClick={() => setActiveTab('STOCK')}
-              className={`px-4 py-2 rounded-lg text-xs sm:text-sm font-bold transition-all ${
+              className={`px-3 py-2 rounded-lg text-xs font-bold transition-all ${
                 activeTab === 'STOCK'
                   ? 'bg-amber-500 text-slate-950 shadow-md'
                   : 'text-slate-400 hover:text-white'
               }`}
             >
-              📦 Stock & Relocalización
+              📦 Stock & Mover
+            </button>
+            <button
+              onClick={() => setActiveTab('CONFIG')}
+              className={`px-3 py-2 rounded-lg text-xs font-bold transition-all ${
+                activeTab === 'CONFIG'
+                  ? 'bg-amber-500 text-slate-950 shadow-md'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              ⚙️ Depósitos & Ubicaciones
             </button>
           </div>
         </div>
@@ -328,218 +440,223 @@ export default function InventoryPage() {
           <div className="text-center py-16">
             <div className="inline-block animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-amber-400"></div>
             <p className="mt-4 text-slate-400 font-medium text-sm">
-              Cargando malla física y niveles de stock...
+              Cargando datos...
             </p>
           </div>
         ) : (
           <>
-            {/* PESTAÑA 1: MALLA VISUAL DE OCUPACIÓN */}
+            {/* PESTAÑA 1: MALLA DE OCUPACIÓN Y ALERTA SOBRECAPACIDAD (>100%) */}
             {activeTab === 'MALLA' && (
               <div className="space-y-6">
-                {/* Indicadores Globales por Depósito */}
-                <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
-                  {warehouses.map((wh) => {
-                    const isHigh = wh.occupancyPercentage >= 90;
-                    const isMedium =
-                      wh.occupancyPercentage >= 50 &&
-                      wh.occupancyPercentage < 90;
-
-                    return (
-                      <div
-                        key={wh.id}
-                        className="bg-slate-900 border border-slate-800 p-4 rounded-2xl shadow-lg relative overflow-hidden"
+                <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl flex flex-wrap gap-4 items-center justify-between">
+                  <div className="flex flex-wrap gap-3 items-center">
+                    <div>
+                      <label className="block text-[10px] text-slate-400 font-bold mb-1">
+                        Filtrar Depósito
+                      </label>
+                      <select
+                        value={filterWarehouseId}
+                        onChange={(e) => setFilterWarehouseId(e.target.value)}
+                        className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
                       >
-                        <div className="flex justify-between items-start mb-2">
-                          <h3 className="font-extrabold text-sm text-slate-100">
-                            {wh.name}
-                          </h3>
-                          <span
-                            className={`text-xs px-2 py-0.5 rounded-full font-bold ${
-                              isHigh
-                                ? 'bg-red-500/20 text-red-400 border border-red-500/30'
-                                : isMedium
-                                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                                  : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                            }`}
-                          >
-                            {wh.occupancyPercentage}%
-                          </span>
-                        </div>
+                        <option value="ALL">Todos los Depósitos</option>
+                        {simpleWarehousesList.map((w) => (
+                          <option key={w.id} value={w.id}>
+                            {w.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
 
-                        <div className="text-xs text-slate-400 mb-3 space-y-1">
-                          <p>
-                            Ocupado:{' '}
-                            <strong className="text-white">
-                              {wh.usedCapacityM3} m³
-                            </strong>{' '}
-                            / {wh.totalCapacityM3} m³
-                          </p>
-                          <p>
-                            Posiciones:{' '}
-                            <strong className="text-white">
-                              {wh.occupiedLocations}
-                            </strong>{' '}
-                            de {wh.totalLocations}
-                          </p>
-                        </div>
+                    <div>
+                      <label className="block text-[10px] text-slate-400 font-bold mb-1">
+                        Tipo de Área
+                      </label>
+                      <select
+                        value={filterCategory}
+                        onChange={(e) => setFilterCategory(e.target.value)}
+                        className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                      >
+                        <option value="ALL">Todas las Áreas</option>
+                        <option value="RACK">Racks</option>
+                        <option value="PASILLO">Pasillos</option>
+                        <option value="TECHO">Techos</option>
+                      </select>
+                    </div>
 
-                        {/* Barra de Progreso */}
-                        <div className="w-full bg-slate-950 rounded-full h-2 overflow-hidden border border-slate-800">
-                          <div
-                            className={`h-2 rounded-full transition-all ${
-                              isHigh
-                                ? 'bg-red-500'
-                                : isMedium
-                                  ? 'bg-amber-500'
-                                  : 'bg-emerald-500'
-                            }`}
-                            style={{
-                              width: `${Math.min(100, wh.occupancyPercentage)}%`,
-                            }}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })}
+                    <div>
+                      <label className="block text-[10px] text-slate-400 font-bold mb-1">
+                        Estado Ocupación
+                      </label>
+                      <select
+                        value={filterOccupancyStatus}
+                        onChange={(e) =>
+                          setFilterOccupancyStatus(e.target.value)
+                        }
+                        className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                      >
+                        <option value="ALL">Todos los Estados</option>
+                        <option value="VACIO">Vacíos (0%)</option>
+                        <option value="PARCIAL">Parcial (1% - 89%)</option>
+                        <option value="COMPLETO">Llenos (90% - 100%)</option>
+                      </select>
+                    </div>
+                  </div>
                 </div>
 
-                {/* Desglose Físico por Pasillos y Racks */}
-                {warehouses.map((wh) => (
-                  <div
-                    key={wh.id}
-                    className="bg-slate-900 border border-slate-800 p-5 rounded-2xl shadow-xl"
-                  >
-                    <h2 className="text-base font-extrabold text-amber-400 mb-4 flex items-center gap-2">
-                      <span>🏬</span> {wh.name} — Pasillos & Ubicaciones Físicas
-                    </h2>
+                {filteredWarehouses.map((wh) => {
+                  const locs = wh.locations.filter((l) => {
+                    const matchCategory =
+                      filterCategory === 'ALL' || l.category === filterCategory;
+                    let matchStatus = true;
+                    if (filterOccupancyStatus === 'VACIO')
+                      matchStatus = l.occupancyPercentage === 0;
+                    if (filterOccupancyStatus === 'PARCIAL')
+                      matchStatus =
+                        l.occupancyPercentage > 0 && l.occupancyPercentage < 90;
+                    if (filterOccupancyStatus === 'COMPLETO')
+                      matchStatus = l.occupancyPercentage >= 90;
 
-                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
-                      {wh.locations.map((loc) => {
-                        const isFull = loc.occupancyPercentage >= 90;
-                        const isPartial =
-                          loc.occupancyPercentage >= 50 &&
-                          loc.occupancyPercentage < 90;
+                    return matchCategory && matchStatus;
+                  });
 
-                        return (
+                  return (
+                    <div
+                      key={wh.id}
+                      className="bg-slate-900 border border-slate-800 p-5 rounded-2xl shadow-xl"
+                    >
+                      <div className="flex justify-between items-center mb-4 border-b border-slate-800 pb-2">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h2 className="text-base font-extrabold text-amber-400">
+                              🏬 {wh.name}
+                            </h2>
+                            {wh.isOverloaded && (
+                              <span className="bg-red-950 text-red-400 border border-red-800 px-2.5 py-0.5 rounded-full text-[10px] font-black animate-pulse">
+                                ⚠️ SOBREEXIGIDO (&gt;100%)
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-slate-400">
+                            Capacidad: {wh.usedCapacityM3} m³ /{' '}
+                            {wh.totalCapacityM3} m³ (
+                            <strong
+                              className={
+                                wh.isOverloaded
+                                  ? 'text-red-400 font-black'
+                                  : 'text-amber-400'
+                              }
+                            >
+                              {wh.occupancyPercentage}%
+                            </strong>
+                            )
+                          </p>
+                        </div>
+                        <span className="text-xs bg-slate-950 border border-slate-800 px-3 py-1 rounded-full text-slate-300 font-bold">
+                          {locs.length} Ubicaciones Visibles
+                        </span>
+                      </div>
+
+                      {/* BARRA INDICADORA CON INDICACIÓN DE DESBORDAMIENTO */}
+                      <div className="w-full bg-slate-950 rounded-full h-3 overflow-hidden border border-slate-800 mb-4">
+                        <div
+                          className={`h-3 rounded-full transition-all ${
+                            wh.isOverloaded ? 'bg-red-500' : 'bg-amber-500'
+                          }`}
+                          style={{
+                            width: `${Math.min(100, wh.occupancyPercentage)}%`,
+                          }}
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                        {locs.map((loc) => (
                           <div
                             key={loc.id}
-                            className={`p-3 rounded-xl border transition-all text-xs flex flex-col justify-between ${
-                              isFull
+                            className={`p-3 rounded-xl border text-xs flex flex-col justify-between ${
+                              loc.occupancyPercentage >= 90
                                 ? 'bg-red-950/20 border-red-500/40'
-                                : isPartial
+                                : loc.occupancyPercentage > 0
                                   ? 'bg-amber-950/20 border-amber-500/40'
                                   : 'bg-emerald-950/20 border-emerald-500/40'
                             }`}
                           >
                             <div>
-                              <span className="font-black text-slate-100 block text-sm">
+                              <span className="font-black text-white block">
                                 {loc.code}
                               </span>
-                              <span className="text-[10px] text-slate-400 block mb-1">
-                                {loc.aisle}
+                              <span className="text-[10px] text-slate-400 block">
+                                {loc.zoneName}
                               </span>
-                              {loc.comments && (
-                                <p className="text-[10px] text-amber-300/80 italic mb-2 line-clamp-1">
-                                  {loc.comments}
-                                </p>
-                              )}
                             </div>
-
-                            <div className="pt-2 border-t border-slate-800/80 flex justify-between items-center">
-                              <span
-                                className={`font-bold ${
-                                  isFull
-                                    ? 'text-red-400'
-                                    : isPartial
-                                      ? 'text-amber-400'
-                                      : 'text-emerald-400'
-                                }`}
-                              >
-                                {loc.occupancyPercentage}% Ocup.
+                            <div className="mt-2 pt-2 border-t border-slate-800 flex justify-between items-center">
+                              <span className="font-bold text-amber-400">
+                                {loc.occupancyPercentage}%
                               </span>
-                              <span className="text-[10px] text-slate-400">
-                                {loc.usedCapacityM3}m³
+                              <span className="text-[10px] text-slate-500">
+                                {loc.usedCapacityM3} m³
                               </span>
                             </div>
                           </div>
-                        );
-                      })}
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 
-            {/* PESTAÑA 2: INBOUND / RECEPTOR DE CONTENEDORES */}
+            {/* PESTAÑA 2: INBOUND */}
             {activeTab === 'INBOUND' && (
-              <div className="bg-slate-900 border border-slate-800 p-5 sm:p-6 rounded-2xl shadow-xl space-y-6">
-                <div className="border-b border-slate-800 pb-4">
-                  <h2 className="text-lg font-bold text-amber-400">
-                    Control de Arribo & Packing List
-                  </h2>
-                  <p className="text-xs text-slate-400">
-                    Registre el contenedor o remito de ingreso, verifique
-                    cantidades reales y asigne ubicaciones definitivas.
-                  </p>
-                </div>
+              <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-6">
+                <h2 className="text-lg font-bold text-amber-400">
+                  Ingreso de Mercadería & Selector Inteligente
+                </h2>
 
-                {/* Cabecera del Inbound */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-xs font-bold text-slate-300 mb-1">
-                      Número de Contenedor / Remito (Opcional)
+                      Contenedor / Remito
                     </label>
                     <input
                       type="text"
                       value={containerNumber}
                       onChange={(e) => setContainerNumber(e.target.value)}
-                      placeholder="Ej. MSCU-984021-3 / Remito #8841"
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-slate-100 focus:outline-none focus:border-amber-500"
+                      placeholder="Ej. MSCU-984021-3"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white"
                     />
                   </div>
 
                   <div>
                     <label className="block text-xs font-bold text-slate-300 mb-1">
-                      Depósito de Descarga *
+                      Depósito Descarga *
                     </label>
                     <select
                       value={inboundWarehouseId}
-                      onChange={(e) => setInboundWarehouseId(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-slate-100 focus:outline-none focus:border-amber-500"
+                      onChange={(e) => {
+                        setInboundWarehouseId(e.target.value);
+                        loadLocationsForWarehouse(e.target.value);
+                      }}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white"
                     >
-                      {warehouses.map((wh) => (
+                      {simpleWarehousesList.map((wh) => (
                         <option key={wh.id} value={wh.id}>
-                          {wh.name} (Ocupación actual: {wh.occupancyPercentage}
-                          %)
+                          {wh.name}
                         </option>
                       ))}
                     </select>
                   </div>
                 </div>
 
-                {/* Tabla de Packing List Dinámica */}
                 <div className="space-y-4">
-                  <div className="flex justify-between items-center">
-                    <h3 className="text-sm font-bold text-slate-200">
-                      Detalle de Bultos a Ingresar
-                    </h3>
-                    <button
-                      type="button"
-                      onClick={handleAddPackingItem}
-                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold rounded-lg text-xs border border-slate-700"
+                  {packingList.map((item, index) => (
+                    <div
+                      key={index}
+                      className="bg-slate-950 border border-slate-800 p-4 rounded-xl space-y-3"
                     >
-                      + Agregar Producto
-                    </button>
-                  </div>
-
-                  <div className="space-y-3">
-                    {packingList.map((item, index) => (
-                      <div
-                        key={index}
-                        className="bg-slate-950 border border-slate-800 p-4 rounded-xl grid grid-cols-1 sm:grid-cols-2 md:grid-cols-7 gap-3 items-center"
-                      >
+                      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs">
                         <div>
-                          <label className="block text-[10px] font-bold text-slate-400 mb-1">
+                          <label className="block text-slate-400 mb-1">
                             SKU *
                           </label>
                           <input
@@ -552,13 +669,12 @@ export default function InventoryPage() {
                                 e.target.value,
                               )
                             }
-                            placeholder="SKU-102"
-                            className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs text-white"
+                            className="w-full bg-slate-900 border border-slate-800 p-2 rounded text-white"
                           />
                         </div>
 
-                        <div className="md:col-span-2">
-                          <label className="block text-[10px] font-bold text-slate-400 mb-1">
+                        <div className="sm:col-span-2">
+                          <label className="block text-slate-400 mb-1">
                             Producto *
                           </label>
                           <input
@@ -571,18 +687,16 @@ export default function InventoryPage() {
                                 e.target.value,
                               )
                             }
-                            placeholder="Caja Kit Herramientas x12"
-                            className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs text-white"
+                            className="w-full bg-slate-900 border border-slate-800 p-2 rounded text-white"
                           />
                         </div>
 
                         <div>
-                          <label className="block text-[10px] font-bold text-slate-400 mb-1">
+                          <label className="block text-slate-400 mb-1">
                             Bultos Reales
                           </label>
                           <input
                             type="number"
-                            min="1"
                             value={item.quantityBultosExpected}
                             onChange={(e) =>
                               handleUpdatePackingItem(
@@ -591,289 +705,333 @@ export default function InventoryPage() {
                                 Number(e.target.value),
                               )
                             }
-                            className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs text-amber-400 font-bold"
+                            className="w-full bg-slate-900 border border-slate-800 p-2 rounded text-amber-400 font-bold"
                           />
                         </div>
+                      </div>
 
+                      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs bg-slate-900 p-3 rounded-lg border border-slate-800">
                         <div>
-                          <label className="block text-[10px] font-bold text-slate-400 mb-1">
-                            Peso/Bulto (Kg)
-                          </label>
-                          <input
-                            type="number"
-                            step="0.1"
-                            value={item.weightPerBultoKg}
-                            onChange={(e) =>
-                              handleUpdatePackingItem(
-                                index,
-                                'weightPerBultoKg',
-                                Number(e.target.value),
-                              )
-                            }
-                            className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs text-white"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[10px] font-bold text-slate-400 mb-1">
-                            Ubicación Destino *
+                          <label className="block text-slate-400 mb-1">
+                            1. Área
                           </label>
                           <select
-                            value={item.locationId || ''}
+                            value={item.category}
                             onChange={(e) =>
                               handleUpdatePackingItem(
                                 index,
-                                'locationId',
+                                'category',
                                 e.target.value,
                               )
                             }
-                            className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs text-white"
+                            className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white"
                           >
-                            <option value="">-- Posición --</option>
-                            {locations.map((loc) => (
-                              <option key={loc.id} value={loc.id}>
-                                {loc.code} ({loc.aisle})
-                              </option>
-                            ))}
+                            <option value="RACK">Rack</option>
+                            <option value="PASILLO">Pasillo</option>
+                            <option value="TECHO">Techo</option>
                           </select>
                         </div>
 
-                        <div className="flex justify-end sm:col-span-2 md:col-span-1">
-                          {packingList.length > 1 && (
-                            <button
-                              type="button"
-                              onClick={() => handleRemovePackingItem(index)}
-                              className="px-2 py-1 bg-red-950 hover:bg-red-900 text-red-300 rounded text-xs border border-red-800"
-                            >
-                              Eliminar
-                            </button>
-                          )}
+                        {item.category === 'RACK' ? (
+                          <>
+                            <div>
+                              <label className="block text-slate-400 mb-1">
+                                2. Nivel
+                              </label>
+                              <select
+                                value={item.rackLevel}
+                                onChange={(e) =>
+                                  handleUpdatePackingItem(
+                                    index,
+                                    'rackLevel',
+                                    e.target.value,
+                                  )
+                                }
+                                className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold"
+                              >
+                                <option value="A">Nivel A</option>
+                                <option value="B">Nivel B</option>
+                                <option value="C">Nivel C</option>
+                                <option value="D">Nivel D</option>
+                              </select>
+                            </div>
+
+                            <div>
+                              <label className="block text-slate-400 mb-1">
+                                3. Módulo (1 a 84)
+                              </label>
+                              <input
+                                type="number"
+                                min="1"
+                                max="84"
+                                value={item.moduleNumber}
+                                onChange={(e) =>
+                                  handleUpdatePackingItem(
+                                    index,
+                                    'moduleNumber',
+                                    Number(e.target.value),
+                                  )
+                                }
+                                className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold"
+                              />
+                            </div>
+                          </>
+                        ) : (
+                          <div className="sm:col-span-2">
+                            <label className="block text-slate-400 mb-1">
+                              2. Nombre Área / Pasillo
+                            </label>
+                            <input
+                              type="text"
+                              value={item.zoneName}
+                              onChange={(e) =>
+                                handleUpdatePackingItem(
+                                  index,
+                                  'zoneName',
+                                  e.target.value,
+                                )
+                              }
+                              placeholder="Ej. Pasillo 1, Techo Oficina..."
+                              className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white"
+                            />
+                          </div>
+                        )}
+
+                        <div>
+                          <label className="block text-slate-400 mb-1">
+                            Estado Posición
+                          </label>
+                          <span
+                            className={`block p-2 rounded text-center font-bold ${
+                              item.locationId
+                                ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                                : 'bg-red-950 text-red-400 border border-red-800'
+                            }`}
+                          >
+                            {item.locationId ? '✓ Encontrada' : '✕ No Existe'}
+                          </span>
                         </div>
                       </div>
-                    ))}
-                  </div>
+                    </div>
+                  ))}
+
+                  <button
+                    onClick={handleAddPackingItem}
+                    className="px-3 py-1.5 bg-slate-800 text-amber-400 font-bold rounded text-xs"
+                  >
+                    + Agregar Otro Ítem
+                  </button>
                 </div>
 
                 <div className="pt-4 border-t border-slate-800 flex justify-end">
                   <button
-                    type="button"
                     onClick={handleConfirmInbound}
                     disabled={submitting}
-                    className="px-6 py-3.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-xl text-sm transition-all shadow-lg active:scale-[0.98]"
+                    className="px-6 py-3.5 bg-amber-500 text-slate-950 font-black rounded-xl text-sm"
                   >
                     {submitting
-                      ? 'Procesando Ingreso...'
-                      : '📥 CONFIRMAR INGRESO & UBICAR MERCADERÍA'}
+                      ? 'Procesando...'
+                      : '📥 CONFIRMAR INGRESO & ESTIBAR'}
                   </button>
                 </div>
               </div>
             )}
 
-            {/* PESTAÑA 3: LISTADO DE STOCK & RELOCALIZACIÓN INTERNA */}
-            {activeTab === 'STOCK' && (
-              <div className="space-y-4">
-                {/* Filtros de Búsqueda */}
-                <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl flex flex-wrap gap-4 justify-between items-center">
-                  <div className="flex flex-wrap gap-3 items-center flex-1">
-                    <input
-                      type="text"
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                      placeholder="Buscar por SKU, Producto, Posición o Contenedor..."
-                      className="bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-sm text-slate-100 min-w-[280px] focus:outline-none focus:border-amber-500"
-                    />
+            {/* PESTAÑA 4: GESTIÓN CON GENERADOR INTELIGENTE POR RANGOS Y BORRADO EN LOTE */}
+            {activeTab === 'CONFIG' && (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* GENERADOR RANGOS INTELIGENTE */}
+                <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4 shadow-xl">
+                  <h2 className="text-base font-bold text-amber-400 border-b border-slate-800 pb-2">
+                    ⚡ Generador Inteligente por Rangos
+                  </h2>
 
+                  <div>
+                    <label className="block text-xs text-slate-300 mb-1">
+                      Depósito Destino *
+                    </label>
                     <select
-                      value={selectedWarehouseId}
-                      onChange={(e) => setSelectedWarehouseId(e.target.value)}
-                      className="bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-500"
+                      value={targetConfigWhId}
+                      onChange={(e) => setTargetConfigWhId(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white"
                     >
-                      <option value="">Todos los Depósitos</option>
-                      {warehouses.map((wh) => (
-                        <option key={wh.id} value={wh.id}>
-                          {wh.name}
+                      {simpleWarehousesList.map((w) => (
+                        <option key={w.id} value={w.id}>
+                          {w.name}
                         </option>
                       ))}
                     </select>
                   </div>
 
-                  <span className="text-xs text-slate-400 font-bold">
-                    Mostrando {filteredStock.length} registros de stock
-                  </span>
-                </div>
+                  <div className="grid grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <label className="block text-slate-400 mb-1">
+                        Tipo de Estructura
+                      </label>
+                      <select
+                        value={genCategory}
+                        onChange={(e) =>
+                          setGenCategory(e.target.value as LocationTypeCategory)
+                        }
+                        className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-white font-bold"
+                      >
+                        <option value="RACK">Rack (Pared / Módulos)</option>
+                        <option value="PASILLO">Pasillo Especial</option>
+                        <option value="TECHO">Techo</option>
+                      </select>
+                    </div>
 
-                {/* Tabla de Stock Registrado */}
-                <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs text-slate-300">
-                      <thead className="bg-slate-950 text-slate-400 font-bold uppercase tracking-wider border-b border-slate-800">
-                        <tr>
-                          <th className="p-3.5">Producto / SKU</th>
-                          <th className="p-3.5">Depósito</th>
-                          <th className="p-3.5">Posición Física</th>
-                          <th className="p-3.5 text-center">Bultos Cerrados</th>
-                          <th className="p-3.5 text-right">Peso Total</th>
-                          <th className="p-3.5 text-right">Volumen</th>
-                          <th className="p-3.5 text-center">Acciones</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-800/80">
-                        {filteredStock.length === 0 ? (
-                          <tr>
-                            <td
-                              colSpan={7}
-                              className="p-8 text-center text-slate-500"
-                            >
-                              No se encontraron registros de stock que coincidan
-                              con los filtros.
-                            </td>
-                          </tr>
-                        ) : (
-                          filteredStock.map((stock) => (
-                            <tr
-                              key={stock.id}
-                              className="hover:bg-slate-800/50 transition-colors"
-                            >
-                              <td className="p-3.5">
-                                <span className="font-bold text-white block">
-                                  {stock.productName}
-                                </span>
-                                <span className="text-[11px] text-amber-400">
-                                  SKU: {stock.productSku}
-                                </span>
-                                {stock.containerNumber && (
-                                  <span className="text-[10px] text-slate-400 block">
-                                    Contenedor: {stock.containerNumber}
-                                  </span>
-                                )}
-                              </td>
-                              <td className="p-3.5 text-slate-300 font-semibold">
-                                {stock.warehouseName}
-                              </td>
-                              <td className="p-3.5">
-                                <span className="bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800 font-mono font-bold text-white">
-                                  📍 {stock.locationCode}
-                                </span>
-                              </td>
-                              <td className="p-3.5 text-center font-black text-amber-400 text-sm">
-                                {stock.quantityBultos} cjs
-                              </td>
-                              <td className="p-3.5 text-right font-bold text-slate-200">
-                                {stock.totalWeightKg} Kg
-                              </td>
-                              <td className="p-3.5 text-right font-bold text-slate-400">
-                                {stock.totalVolumeM3} m³
-                              </td>
-                              <td className="p-3.5 text-center">
-                                <button
-                                  type="button"
-                                  onClick={() => handleOpenMoveModal(stock)}
-                                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-amber-300 rounded-lg font-bold border border-slate-700 transition-all text-[11px]"
-                                >
-                                  🔄 Mover Stock
-                                </button>
-                              </td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
+                    <div>
+                      <label className="block text-slate-400 mb-1">
+                        Capacidad $m^3$ por Posición
+                      </label>
+                      <input
+                        type="number"
+                        step="0.5"
+                        value={genCapacityM3}
+                        onChange={(e) =>
+                          setGenCapacityM3(Number(e.target.value))
+                        }
+                        className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-white font-bold"
+                      />
+                    </div>
                   </div>
-                </div>
 
-                {/* MODAL DE RELOCALIZACIÓN INTERNA */}
-                {selectedStockToMove && (
-                  <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-                    <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl max-w-md w-full shadow-2xl space-y-4">
-                      <div className="flex justify-between items-start border-b border-slate-800 pb-3">
-                        <div>
-                          <h3 className="font-bold text-amber-400 text-base">
-                            Relocalización de Stock
-                          </h3>
-                          <p className="text-xs text-slate-400">
-                            {selectedStockToMove.productName}
-                          </p>
-                        </div>
-                        <button
-                          onClick={() => setSelectedStockToMove(null)}
-                          className="text-slate-400 hover:text-white font-bold text-sm"
-                        >
-                          ✕
-                        </button>
-                      </div>
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">
+                      Nombre del Área / Rack / Pasillo
+                    </label>
+                    <input
+                      type="text"
+                      value={genAreaName}
+                      onChange={(e) => setGenAreaName(e.target.value)}
+                      placeholder="Ej. Rack Pared Sur, Pasillo 1, Techo Generador..."
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white"
+                    />
+                  </div>
 
-                      <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-xs space-y-1">
-                        <p className="text-slate-400">
-                          Ubicación Actual:{' '}
-                          <strong className="text-white">
-                            {selectedStockToMove.locationCode}
-                          </strong>
-                        </p>
-                        <p className="text-slate-400">
-                          Bultos Disponibles:{' '}
-                          <strong className="text-amber-400">
-                            {selectedStockToMove.quantityBultos} bultos
-                          </strong>
-                        </p>
-                      </div>
+                  <div className="grid grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <label className="block text-slate-400 mb-1">
+                        Niveles / Letras (Separadas por Coma)
+                      </label>
+                      <input
+                        type="text"
+                        value={genLevelsInput}
+                        onChange={(e) => setGenLevelsInput(e.target.value)}
+                        placeholder="Ej. A, B, C, D"
+                        className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-white font-bold"
+                      />
+                    </div>
 
-                      <div>
-                        <label className="block text-xs font-bold text-slate-300 mb-1">
-                          Cantidad de Bultos a Mover
-                        </label>
+                    <div>
+                      <label className="block text-slate-400 mb-1">
+                        Rango Numérico (Desde - Hasta)
+                      </label>
+                      <div className="flex gap-2">
                         <input
                           type="number"
-                          min="1"
-                          max={selectedStockToMove.quantityBultos}
-                          value={qtyToMove}
-                          onChange={(e) => setQtyToMove(Number(e.target.value))}
-                          className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-amber-400 font-bold"
+                          value={genPosStart}
+                          onChange={(e) =>
+                            setGenPosStart(Number(e.target.value))
+                          }
+                          className="w-1/2 bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-white font-bold text-center"
                         />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold text-slate-300 mb-1">
-                          Nueva Posición Física (Destino)
-                        </label>
-                        <select
-                          value={targetLocationId}
-                          onChange={(e) => setTargetLocationId(e.target.value)}
-                          className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:outline-none focus:border-amber-500"
-                        >
-                          <option value="">-- Seleccionar Posición --</option>
-                          {locations
-                            .filter(
-                              (loc) =>
-                                loc.id !== selectedStockToMove.locationId,
-                            )
-                            .map((loc) => (
-                              <option key={loc.id} value={loc.id}>
-                                {loc.code} ({loc.aisle})
-                              </option>
-                            ))}
-                        </select>
-                      </div>
-
-                      <div className="pt-2 flex justify-end gap-3">
-                        <button
-                          type="button"
-                          onClick={() => setSelectedStockToMove(null)}
-                          className="px-4 py-2 bg-slate-800 text-slate-300 rounded-xl text-xs font-bold"
-                        >
-                          Cancelar
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleConfirmMoveStock}
-                          disabled={submitting}
-                          className="px-5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl text-xs"
-                        >
-                          {submitting ? 'Guardando...' : 'Confirmar Traslado'}
-                        </button>
+                        <input
+                          type="number"
+                          value={genPosEnd}
+                          onChange={(e) => setGenPosEnd(Number(e.target.value))}
+                          className="w-1/2 bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-white font-bold text-center"
+                        />
                       </div>
                     </div>
                   </div>
-                )}
+
+                  <button
+                    onClick={handleGenerateBatch}
+                    disabled={submitting}
+                    className="w-full py-3.5 bg-amber-500 text-slate-950 font-black rounded-xl text-xs shadow-lg"
+                  >
+                    ⚡ GENERAR LOTE DE UBICACIONES
+                  </button>
+                </div>
+
+                {/* BORRADO MASIVO & BORRADO COMPLETO */}
+                <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4 shadow-xl">
+                  <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                    <h2 className="text-base font-bold text-amber-400">
+                      🗑️ Mantenimiento Masivo
+                    </h2>
+                    <button
+                      onClick={handleDeleteFullWarehouse}
+                      className="px-3 py-1 bg-red-950 border border-red-800 text-red-400 rounded text-xs font-bold"
+                    >
+                      ⚠️ Borrar Depósito Completo
+                    </button>
+                  </div>
+
+                  <div className="flex justify-between items-center text-xs">
+                    <button
+                      onClick={handleSelectAllLocsForDelete}
+                      className="text-amber-400 font-bold hover:underline"
+                    >
+                      {selectedLocIdsForDelete.length === locations.length
+                        ? 'Desmarcar Todas'
+                        : 'Seleccionar Todas'}
+                    </button>
+                    <span className="text-slate-400">
+                      {selectedLocIdsForDelete.length} Seleccionadas
+                    </span>
+                  </div>
+
+                  <div className="max-h-[300px] overflow-y-auto space-y-2 pr-1">
+                    {locations.map((loc) => {
+                      const isSelected = selectedLocIdsForDelete.includes(
+                        loc.id,
+                      );
+
+                      return (
+                        <div
+                          key={loc.id}
+                          onClick={() => toggleSelectLocForDelete(loc.id)}
+                          className={`cursor-pointer p-3 rounded-xl border flex items-center justify-between text-xs ${
+                            isSelected
+                              ? 'bg-red-950/30 border-red-500'
+                              : 'bg-slate-950 border-slate-800'
+                          }`}
+                        >
+                          <div className="flex items-center gap-3">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => {}}
+                              className="accent-red-500 w-4 h-4"
+                            />
+                            <div>
+                              <strong className="text-white block">
+                                {loc.code}
+                              </strong>
+                              <span className="text-slate-400 text-[10px]">
+                                {loc.zoneName} ({loc.maxCapacityM3} m³)
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {selectedLocIdsForDelete.length > 0 && (
+                    <button
+                      onClick={handleDeleteSelectedLocations}
+                      disabled={submitting}
+                      className="w-full py-3 bg-red-600 hover:bg-red-500 text-white font-black rounded-xl text-xs shadow-lg"
+                    >
+                      🗑️ ELIMINAR {selectedLocIdsForDelete.length} UBICACIONES
+                      SELECCIONADAS
+                    </button>
+                  )}
+                </div>
               </div>
             )}
           </>
