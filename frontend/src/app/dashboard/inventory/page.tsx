@@ -38,14 +38,13 @@ export default function InventoryPage() {
 
   // Pre-carga Inbound (Fase 1)
   const [containerNumber, setContainerNumber] = useState<string>('');
-  const [inboundWarehouseId, setInboundWarehouseId] = useState<string>('');
   const [packingList, setPackingList] = useState<PackingListItem[]>([
     {
       productSku: 'US26615',
       productName: 'Casco de bici',
       quantityBultosExpected: 30,
-      totalUnitsExpected: 900,
-      unitsPerBox: 30,
+      totalUnitsExpected: 300,
+      unitsPerBox: 10,
       weightPerBultoKg: 10,
       lengthCm: 40,
       widthCm: 30,
@@ -65,6 +64,8 @@ export default function InventoryPage() {
   // Selección para Descarga Móvil (Fase 2)
   const [selectedPendingContainerId, setSelectedPendingContainerId] =
     useState<string>('');
+  const [dischargeWarehouseId, setDischargeWarehouseId] = useState<string>('');
+  const [physicalControlItems, setPhysicalControlItems] = useState<any[]>([]);
 
   // Mantenimiento Ubicaciones
   const [newWhName, setNewWhName] = useState<string>('');
@@ -88,10 +89,10 @@ export default function InventoryPage() {
   }, []);
 
   useEffect(() => {
-    if (inboundWarehouseId) {
-      loadLocationsForWarehouse(inboundWarehouseId);
+    if (dischargeWarehouseId) {
+      loadLocationsForWarehouse(dischargeWarehouseId);
     }
-  }, [inboundWarehouseId]);
+  }, [dischargeWarehouseId]);
 
   useEffect(() => {
     if (targetConfigWhId) {
@@ -99,6 +100,45 @@ export default function InventoryPage() {
       setSelectedAreaFilter('ALL');
     }
   }, [targetConfigWhId]);
+
+  useEffect(() => {
+    if (selectedPendingContainerId) {
+      const container = containersHistory.find(
+        (c) => c.id === selectedPendingContainerId,
+      );
+      if (container) {
+        if (container.warehouseId) {
+          setDischargeWarehouseId(container.warehouseId);
+        } else if (simpleWarehousesList.length > 0) {
+          setDischargeWarehouseId(simpleWarehousesList[0].id);
+        }
+
+        if (container.items) {
+          setPhysicalControlItems(
+            container.items.map((i: any) => ({
+              ...i,
+              entryDate: new Date().toISOString().split('T')[0],
+              unitsPerBox: i.unitsPerBox || 1,
+              lengthCm: 40,
+              widthCm: 30,
+              heightCm: 30,
+              weightPerBultoKg: i.weightPerBultoKg || 10,
+              volumePerBultoM3: i.volumePerBultoM3 || 0.036,
+              bultosPerPallet: 10,
+              locationId: i.locationId || locations[0]?.id || '',
+            })),
+          );
+        }
+      }
+    } else {
+      setPhysicalControlItems([]);
+    }
+  }, [
+    selectedPendingContainerId,
+    containersHistory,
+    locations,
+    simpleWarehousesList,
+  ]);
 
   const loadData = async () => {
     setLoading(true);
@@ -117,10 +157,10 @@ export default function InventoryPage() {
 
       if (whList.length > 0) {
         if (
-          !inboundWarehouseId ||
-          !whList.some((w: { id: string }) => w.id === inboundWarehouseId)
+          !dischargeWarehouseId ||
+          !whList.some((w: { id: string }) => w.id === dischargeWarehouseId)
         ) {
-          setInboundWarehouseId(whList[0].id);
+          setDischargeWarehouseId(whList[0].id);
         }
         if (
           !targetConfigWhId ||
@@ -170,6 +210,72 @@ export default function InventoryPage() {
     return Array.from(areas);
   }, [locations]);
 
+  // Manejo de la tabla dinámica en Fase 1 (Packing List)
+  const handleUpdatePackingItem = (
+    index: number,
+    field: keyof PackingListItem,
+    value: any,
+  ) => {
+    setPackingList((prev) => {
+      const updated = [...prev];
+      updated[index] = { ...updated[index], [field]: value };
+      return updated;
+    });
+  };
+
+  const handleAddPackingItem = () => {
+    setPackingList((prev) => [
+      ...prev,
+      {
+        productSku: '',
+        productName: '',
+        quantityBultosExpected: 1,
+        totalUnitsExpected: 1,
+        unitsPerBox: 1,
+        weightPerBultoKg: 10,
+        lengthCm: 40,
+        widthCm: 30,
+        heightCm: 30,
+        volumePerBultoM3: 0.036,
+        sampleUnits: 0,
+        notes: '',
+        entryDate: new Date().toISOString().split('T')[0],
+        category: 'RACK',
+        zoneName: 'Rack Izquierda',
+        rackLevel: 'A',
+        moduleNumber: 1,
+        locationId: locations[0]?.id || '',
+      },
+    ]);
+  };
+
+  const handleRemovePackingItem = (index: number) => {
+    if (packingList.length === 1) return;
+    setPackingList((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  // Manejo de la tabla en Fase 2 (Control Físico)
+  const handleUpdatePhysicalItem = (
+    index: number,
+    field: string,
+    value: any,
+  ) => {
+    setPhysicalControlItems((prev) => {
+      const updated = [...prev];
+      const item = { ...updated[index], [field]: value };
+
+      if (field === 'lengthCm' || field === 'widthCm' || field === 'heightCm') {
+        const l = field === 'lengthCm' ? Number(value) : item.lengthCm;
+        const w = field === 'widthCm' ? Number(value) : item.widthCm;
+        const h = field === 'heightCm' ? Number(value) : item.heightCm;
+        item.volumePerBultoM3 = Number(((l * w * h) / 1000000).toFixed(4));
+      }
+
+      updated[index] = item;
+      return updated;
+    });
+  };
+
   const handleCreateWarehouse = async () => {
     if (!newWhName.trim()) {
       setErrorMsg('Escriba el nombre del depósito.');
@@ -193,25 +299,29 @@ export default function InventoryPage() {
       setErrorMsg('El número de contenedor es obligatorio.');
       return;
     }
-    if (!inboundWarehouseId) {
-      setErrorMsg('Seleccione un depósito de descarga.');
-      return;
+
+    for (let i = 0; i < packingList.length; i++) {
+      if (!packingList[i].productSku || !packingList[i].productName) {
+        setErrorMsg(`Indique Código SKU y Descripción en la línea #${i + 1}.`);
+        return;
+      }
     }
 
     setSubmitting(true);
     try {
       await inventoryService.createPackingList({
         containerNumber: containerNumber.trim(),
-        warehouseId: inboundWarehouseId,
+        warehouseId: simpleWarehousesList[0]?.id || '',
         items: packingList.map((item) => ({
           productSku: item.productSku,
           productName: item.productName,
           quantityBultos: item.quantityBultosExpected,
-          unitsPerBox: item.unitsPerBox,
-          weightPerBultoKg: item.weightPerBultoKg,
-          volumePerBultoM3: item.volumePerBultoM3,
-          sampleUnits: item.sampleUnits,
-          notes: item.notes,
+          totalUnitsExpected: item.totalUnitsExpected,
+          unitsPerBox: item.unitsPerBox || 1,
+          weightPerBultoKg: item.weightPerBultoKg || 10,
+          volumePerBultoM3: item.volumePerBultoM3 || 0.036,
+          sampleUnits: item.sampleUnits || 0,
+          notes: item.notes || '',
           locationId: item.locationId || locations[0]?.id || '',
         })),
       });
@@ -238,6 +348,11 @@ export default function InventoryPage() {
       return;
     }
 
+    if (!dischargeWarehouseId) {
+      setErrorMsg('Seleccione un depósito de descarga.');
+      return;
+    }
+
     const selectedCont = pendingContainers.find(
       (c) => c.id === selectedPendingContainerId,
     );
@@ -247,7 +362,7 @@ export default function InventoryPage() {
     try {
       await inventoryService.processInbound(
         selectedPendingContainerId,
-        selectedCont.items.map((i: any) => ({
+        physicalControlItems.map((i: any) => ({
           sku: i.sku,
           description: i.description,
           quantityBultos: i.quantityBultos,
@@ -255,6 +370,7 @@ export default function InventoryPage() {
           weightPerBultoKg: i.weightPerBultoKg,
           volumePerBultoM3: i.volumePerBultoM3,
           locationId: i.locationId || locations[0]?.id,
+          warehouseId: dischargeWarehouseId,
         })),
       );
 
@@ -316,11 +432,28 @@ export default function InventoryPage() {
     }
   };
 
+  const handleSelectAllVisibleLocations = () => {
+    const visibleIds = visibleLocationsInMaintenance.map((l) => l.id);
+    const allSelected = visibleIds.every((id) =>
+      selectedLocIdsForDelete.includes(id),
+    );
+
+    if (allSelected) {
+      setSelectedLocIdsForDelete((prev) =>
+        prev.filter((id) => !visibleIds.includes(id)),
+      );
+    } else {
+      setSelectedLocIdsForDelete((prev) =>
+        Array.from(new Set([...prev, ...visibleIds])),
+      );
+    }
+  };
+
   const handleDeleteSelectedLocations = async () => {
     if (selectedLocIdsForDelete.length === 0) return;
     if (
       !confirm(
-        `¿Confirma eliminar las ${selectedLocIdsForDelete.length} ubicaciones seleccionadas?`,
+        `Confirma eliminar las ${selectedLocIdsForDelete.length} ubicaciones seleccionadas?`,
       )
     )
       return;
@@ -509,23 +642,168 @@ export default function InventoryPage() {
 
             {activeTab === 'INBOUND' && (
               <div className="space-y-6">
-                {/* PRE-CARGA FASE 1 */}
+                {/* FASE 1: PRE-CARGA DE PACKING LIST */}
                 <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
                   <h2 className="text-base font-bold text-amber-400 border-b border-slate-800 pb-2">
                     FASE 1: Pre-carga de Contenedores / Packing List
                   </h2>
+
+                  <div>
+                    <label className="block text-xs text-slate-300 mb-1">
+                      Número de Contenedor / Remito *
+                    </label>
+                    <input
+                      type="text"
+                      value={containerNumber}
+                      onChange={(e) => setContainerNumber(e.target.value)}
+                      placeholder="Ej. MSCU-984021-3"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white"
+                    />
+                  </div>
+
+                  {/* CARGA DINÁMICA DE PRODUCTOS */}
+                  <div className="space-y-3 pt-2">
+                    <div className="flex justify-between items-center">
+                      <span className="text-xs font-bold text-slate-300">
+                        Detalle de Ítems del Packing List
+                      </span>
+                      <button
+                        onClick={handleAddPackingItem}
+                        className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold rounded text-xs"
+                      >
+                        + Agregar Producto
+                      </button>
+                    </div>
+
+                    {packingList.map((item, idx) => (
+                      <div
+                        key={idx}
+                        className="bg-slate-950 p-3 rounded-xl border border-slate-800 grid grid-cols-1 sm:grid-cols-12 gap-3 text-xs items-end"
+                      >
+                        <div className="sm:col-span-3">
+                          <label className="block text-slate-400 mb-1">
+                            Código SKU *
+                          </label>
+                          <input
+                            type="text"
+                            value={item.productSku}
+                            onChange={(e) =>
+                              handleUpdatePackingItem(
+                                idx,
+                                'productSku',
+                                e.target.value,
+                              )
+                            }
+                            placeholder="Ej. US26615"
+                            className="w-full bg-slate-900 border border-slate-800 p-2 rounded text-white font-mono"
+                          />
+                        </div>
+
+                        <div className="sm:col-span-4">
+                          <label className="block text-slate-400 mb-1">
+                            Descripción / Producto *
+                          </label>
+                          <input
+                            type="text"
+                            value={item.productName}
+                            onChange={(e) =>
+                              handleUpdatePackingItem(
+                                idx,
+                                'productName',
+                                e.target.value,
+                              )
+                            }
+                            placeholder="Ej. Casco de bicicleta"
+                            className="w-full bg-slate-900 border border-slate-800 p-2 rounded text-white"
+                          />
+                        </div>
+
+                        <div className="sm:col-span-2">
+                          <label className="block text-slate-400 mb-1">
+                            Total Bultos
+                          </label>
+                          <input
+                            type="number"
+                            value={item.quantityBultosExpected}
+                            onChange={(e) =>
+                              handleUpdatePackingItem(
+                                idx,
+                                'quantityBultosExpected',
+                                Number(e.target.value),
+                              )
+                            }
+                            className="w-full bg-slate-900 border border-slate-800 p-2 rounded text-amber-400 font-bold text-center"
+                          />
+                        </div>
+
+                        <div className="sm:col-span-2">
+                          <label className="block text-slate-400 mb-1">
+                            Total Unidades
+                          </label>
+                          <input
+                            type="number"
+                            value={item.totalUnitsExpected}
+                            onChange={(e) =>
+                              handleUpdatePackingItem(
+                                idx,
+                                'totalUnitsExpected',
+                                Number(e.target.value),
+                              )
+                            }
+                            className="w-full bg-slate-900 border border-slate-800 p-2 rounded text-amber-400 font-bold text-center"
+                          />
+                        </div>
+
+                        <div className="sm:col-span-1 flex justify-end">
+                          {packingList.length > 1 && (
+                            <button
+                              onClick={() => handleRemovePackingItem(idx)}
+                              className="px-2 py-2 bg-red-950 border border-red-800 text-red-400 hover:bg-red-900 rounded font-bold w-full text-center"
+                            >
+                              X
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <button
+                    onClick={handleSavePackingList}
+                    disabled={submitting}
+                    className="px-5 py-3 bg-amber-500 text-slate-950 font-black rounded-xl text-xs shadow-lg"
+                  >
+                    PRE-CARGAR PACKING LIST EN BASE DE DATOS
+                  </button>
+                </div>
+
+                {/* FASE 2: CONTROL MÓVIL Y DESCARGA FÍSICA AL ARRIBAR */}
+                <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
+                  <h2 className="text-base font-bold text-amber-400 border-b border-slate-800 pb-2">
+                    FASE 2: Control Móvil y Descarga Físico-Estibado
+                  </h2>
+
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-xs text-slate-300 mb-1">
-                        Número de Contenedor / Remito *
+                        Seleccionar Contenedor Arribado *
                       </label>
-                      <input
-                        type="text"
-                        value={containerNumber}
-                        onChange={(e) => setContainerNumber(e.target.value)}
-                        placeholder="Ej. MSCU-984021-3"
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white"
-                      />
+                      <select
+                        value={selectedPendingContainerId}
+                        onChange={(e) =>
+                          setSelectedPendingContainerId(e.target.value)
+                        }
+                        className="w-full bg-slate-950 border border-amber-500/50 rounded-xl p-3 text-sm text-amber-300 font-bold"
+                      >
+                        <option value="">
+                          -- Seleccione Contenedor Pendiente --
+                        </option>
+                        {pendingContainers.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.containerNumber} ({c.totalBultos} bultos)
+                          </option>
+                        ))}
+                      </select>
                     </div>
 
                     <div>
@@ -533,8 +811,10 @@ export default function InventoryPage() {
                         Depósito de Descarga *
                       </label>
                       <select
-                        value={inboundWarehouseId}
-                        onChange={(e) => setInboundWarehouseId(e.target.value)}
+                        value={dischargeWarehouseId}
+                        onChange={(e) =>
+                          setDischargeWarehouseId(e.target.value)
+                        }
                         className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white font-bold"
                       >
                         {simpleWarehousesList.map((wh) => (
@@ -546,53 +826,220 @@ export default function InventoryPage() {
                     </div>
                   </div>
 
-                  <button
-                    onClick={handleSavePackingList}
-                    disabled={submitting}
-                    className="px-5 py-3 bg-amber-500 text-slate-950 font-black rounded-xl text-xs"
-                  >
-                    PRE-CARGAR PACKING LIST EN BASE DE DATOS
-                  </button>
-                </div>
+                  {selectedPendingContainerId &&
+                    physicalControlItems.length > 0 && (
+                      <div className="space-y-4 pt-2">
+                        <h3 className="text-xs font-black uppercase text-amber-400">
+                          Bloque de Control Físico por Bulto y Pallet
+                        </h3>
 
-                {/* DESCARGA MÓVIL FASE 2 */}
-                <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
-                  <h2 className="text-base font-bold text-amber-400 border-b border-slate-800 pb-2">
-                    FASE 2: Control Móvil y Descarga Físico-Estibado
-                  </h2>
+                        {physicalControlItems.map((item, idx) => (
+                          <div
+                            key={idx}
+                            className="bg-slate-950 border border-slate-800 p-4 rounded-xl space-y-3 text-xs"
+                          >
+                            <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                              <span className="font-bold text-white">
+                                SKU:{' '}
+                                <span className="text-amber-400 font-mono">
+                                  {item.sku}
+                                </span>{' '}
+                                - {item.description}
+                              </span>
+                              <button
+                                onClick={() =>
+                                  setPrintModalData({
+                                    productSku: item.sku,
+                                    productName: item.description,
+                                    quantityBultos: item.quantityBultos,
+                                    unitsPerBox: item.unitsPerBox,
+                                    containerNumber: pendingContainers.find(
+                                      (c) =>
+                                        c.id === selectedPendingContainerId,
+                                    )?.containerNumber,
+                                    locationCode:
+                                      locations.find(
+                                        (l) => l.id === item.locationId,
+                                      )?.code || 'S/U',
+                                    warehouseName: simpleWarehousesList.find(
+                                      (w) => w.id === dischargeWarehouseId,
+                                    )?.name,
+                                    weightPerBultoKg: item.weightPerBultoKg,
+                                    volumePerBultoM3: item.volumePerBultoM3,
+                                    date: item.entryDate,
+                                  })
+                                }
+                                className="px-3 py-1 bg-amber-500 text-slate-950 font-black rounded text-[11px]"
+                              >
+                                Imprimir Rótulo
+                              </button>
+                            </div>
 
-                  <div>
-                    <label className="block text-xs text-slate-300 mb-1">
-                      Seleccionar Contenedor Arribado *
-                    </label>
-                    <select
-                      value={selectedPendingContainerId}
-                      onChange={(e) =>
-                        setSelectedPendingContainerId(e.target.value)
-                      }
-                      className="w-full bg-slate-950 border border-amber-500/50 rounded-xl p-3 text-sm text-amber-300 font-bold"
-                    >
-                      <option value="">
-                        -- Seleccione Contenedor Pendiente --
-                      </option>
-                      {pendingContainers.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.containerNumber} - Depósito: {c.warehouseName} (
-                          {c.totalBultos} bultos)
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 bg-slate-900 p-3 rounded-lg border border-slate-800">
+                              <div>
+                                <label className="block text-slate-400 mb-1">
+                                  Imagen del Bulto (Foto)
+                                </label>
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  className="w-full text-slate-400 text-[10px]"
+                                />
+                              </div>
 
-                  {selectedPendingContainerId && (
-                    <button
-                      onClick={handleProcessInboundDischarge}
-                      disabled={submitting}
-                      className="w-full py-3.5 bg-amber-500 text-slate-950 font-black rounded-xl text-xs"
-                    >
-                      CONFIRMAR DESCARGA E INGRESO AL STOCK
-                    </button>
-                  )}
+                              <div>
+                                <label className="block text-slate-400 mb-1">
+                                  Unidades por Bulto
+                                </label>
+                                <input
+                                  type="number"
+                                  value={item.unitsPerBox}
+                                  onChange={(e) =>
+                                    handleUpdatePhysicalItem(
+                                      idx,
+                                      'unitsPerBox',
+                                      Number(e.target.value),
+                                    )
+                                  }
+                                  className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="block text-slate-400 mb-1">
+                                  Medidas (L x A x H cm)
+                                </label>
+                                <div className="flex gap-1">
+                                  <input
+                                    type="number"
+                                    value={item.lengthCm}
+                                    onChange={(e) =>
+                                      handleUpdatePhysicalItem(
+                                        idx,
+                                        'lengthCm',
+                                        Number(e.target.value),
+                                      )
+                                    }
+                                    className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center"
+                                  />
+                                  <input
+                                    type="number"
+                                    value={item.widthCm}
+                                    onChange={(e) =>
+                                      handleUpdatePhysicalItem(
+                                        idx,
+                                        'widthCm',
+                                        Number(e.target.value),
+                                      )
+                                    }
+                                    className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center"
+                                  />
+                                  <input
+                                    type="number"
+                                    value={item.heightCm}
+                                    onChange={(e) =>
+                                      handleUpdatePhysicalItem(
+                                        idx,
+                                        'heightCm',
+                                        Number(e.target.value),
+                                      )
+                                    }
+                                    className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center"
+                                  />
+                                </div>
+                              </div>
+
+                              <div>
+                                <label className="block text-slate-400 mb-1">
+                                  Peso Bulto (Kg)
+                                </label>
+                                <input
+                                  type="number"
+                                  value={item.weightPerBultoKg}
+                                  onChange={(e) =>
+                                    handleUpdatePhysicalItem(
+                                      idx,
+                                      'weightPerBultoKg',
+                                      Number(e.target.value),
+                                    )
+                                  }
+                                  className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold"
+                                />
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-900 p-3 rounded-lg border border-slate-800">
+                              <div>
+                                <label className="block text-slate-400 mb-1">
+                                  Fecha de Ingreso
+                                </label>
+                                <input
+                                  type="date"
+                                  value={item.entryDate}
+                                  onChange={(e) =>
+                                    handleUpdatePhysicalItem(
+                                      idx,
+                                      'entryDate',
+                                      e.target.value,
+                                    )
+                                  }
+                                  className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="block text-slate-400 mb-1">
+                                  Bultos por Pallet
+                                </label>
+                                <input
+                                  type="number"
+                                  value={item.bultosPerPallet}
+                                  onChange={(e) =>
+                                    handleUpdatePhysicalItem(
+                                      idx,
+                                      'bultosPerPallet',
+                                      Number(e.target.value),
+                                    )
+                                  }
+                                  className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-amber-400 font-bold"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="block text-slate-400 mb-1">
+                                  Ubicación Asignada *
+                                </label>
+                                <select
+                                  value={item.locationId}
+                                  onChange={(e) =>
+                                    handleUpdatePhysicalItem(
+                                      idx,
+                                      'locationId',
+                                      e.target.value,
+                                    )
+                                  }
+                                  className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold"
+                                >
+                                  {locations.map((loc) => (
+                                    <option key={loc.id} value={loc.id}>
+                                      {loc.code} ({loc.zoneName})
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+
+                        <button
+                          onClick={handleProcessInboundDischarge}
+                          disabled={submitting}
+                          className="w-full py-3.5 bg-amber-500 text-slate-950 font-black rounded-xl text-xs shadow-lg"
+                        >
+                          CONFIRMAR DESCARGA E INGRESO AL STOCK
+                        </button>
+                      </div>
+                    )}
                 </div>
               </div>
             )}
@@ -872,7 +1319,7 @@ export default function InventoryPage() {
                     </button>
                   </div>
 
-                  {/* MANTENIMIENTO Y SELECCIÓN MASIVA */}
+                  {/* MANTENIMIENTO Y SELECCIÓN MASIVA COMPLETO */}
                   <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4 flex flex-col justify-between">
                     <div className="space-y-4">
                       <div className="flex justify-between items-center border-b border-slate-800 pb-2">
@@ -919,7 +1366,7 @@ export default function InventoryPage() {
                             className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-white font-bold"
                           >
                             <option value="ALL">
-                              Todos los Bloques ({locations.length})
+                              Todos los Bloques ({locations.length} pos)
                             </option>
                             {availableAreasInWarehouse.map((area) => (
                               <option key={area} value={area}>
@@ -935,6 +1382,23 @@ export default function InventoryPage() {
                         </div>
                       </div>
 
+                      <div className="flex justify-between items-center text-xs pt-2 border-t border-slate-800">
+                        <button
+                          onClick={handleSelectAllVisibleLocations}
+                          className="text-amber-400 font-bold hover:underline"
+                        >
+                          {visibleLocationsInMaintenance.length > 0 &&
+                          visibleLocationsInMaintenance.every((l) =>
+                            selectedLocIdsForDelete.includes(l.id),
+                          )
+                            ? 'Desmarcar Visibles'
+                            : 'Seleccionar Todas las Posiciones Visibles'}
+                        </button>
+                        <span className="text-slate-400 font-medium">
+                          {selectedLocIdsForDelete.length} Seleccionadas
+                        </span>
+                      </div>
+
                       <div className="max-h-[220px] overflow-y-auto space-y-2 pr-1">
                         {visibleLocationsInMaintenance.map((loc) => {
                           const isSelected = selectedLocIdsForDelete.includes(
@@ -943,20 +1407,22 @@ export default function InventoryPage() {
                           return (
                             <div
                               key={loc.id}
-                              onClick={() =>
-                                setSelectedLocIdsForDelete((prev) =>
-                                  prev.includes(loc.id)
-                                    ? prev.filter((id) => id !== loc.id)
-                                    : [...prev, loc.id],
-                                )
-                              }
-                              className={`p-2.5 rounded-xl border flex items-center justify-between text-xs cursor-pointer ${
+                              className={`p-2.5 rounded-xl border flex items-center justify-between text-xs ${
                                 isSelected
                                   ? 'bg-red-950/30 border-red-500'
                                   : 'bg-slate-950 border-slate-800'
                               }`}
                             >
-                              <div className="flex items-center gap-3">
+                              <div
+                                onClick={() =>
+                                  setSelectedLocIdsForDelete((prev) =>
+                                    prev.includes(loc.id)
+                                      ? prev.filter((id) => id !== loc.id)
+                                      : [...prev, loc.id],
+                                  )
+                                }
+                                className="flex items-center gap-3 cursor-pointer flex-1"
+                              >
                                 <input
                                   type="checkbox"
                                   checked={isSelected}
@@ -972,9 +1438,22 @@ export default function InventoryPage() {
                                   </span>
                                 </div>
                               </div>
-                              <span className="text-amber-400 font-bold">
-                                {loc.maxCapacityM3} m3
-                              </span>
+
+                              {/* EDICIÓN RÁPIDA DE CAPACIDAD M3 POR RACK */}
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px] text-slate-400 font-bold">
+                                  Capacidad:
+                                </span>
+                                <input
+                                  type="number"
+                                  step="0.5"
+                                  defaultValue={loc.maxCapacityM3}
+                                  className="w-16 bg-slate-900 border border-slate-800 px-2 py-1 rounded text-amber-400 font-bold text-center text-xs"
+                                />
+                                <span className="text-[10px] text-slate-500">
+                                  m3
+                                </span>
+                              </div>
                             </div>
                           );
                         })}
@@ -985,7 +1464,7 @@ export default function InventoryPage() {
                       <button
                         onClick={handleDeleteSelectedLocations}
                         disabled={submitting}
-                        className="w-full py-3 bg-red-600 text-white font-black rounded-xl text-xs"
+                        className="w-full py-3 bg-red-600 text-white font-black rounded-xl text-xs shadow-lg"
                       >
                         ELIMINAR {selectedLocIdsForDelete.length} POSICIONES
                         SELECCIONADAS
