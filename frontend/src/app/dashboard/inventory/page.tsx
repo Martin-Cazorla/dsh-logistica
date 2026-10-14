@@ -40,18 +40,18 @@ export default function InventoryPage() {
   const [containerNumber, setContainerNumber] = useState<string>('');
   const [packingList, setPackingList] = useState<PackingListItem[]>([
     {
-      productSku: 'US26615',
-      productName: 'Casco de bici',
-      quantityBultosExpected: 30,
-      totalUnitsExpected: 300,
-      unitsPerBox: 10,
+      productSku: '',
+      productName: '',
+      quantityBultosExpected: 1,
+      totalUnitsExpected: 1,
+      unitsPerBox: 1,
       weightPerBultoKg: 10,
       lengthCm: 40,
       widthCm: 30,
       heightCm: 30,
       volumePerBultoM3: 0.036,
       sampleUnits: 0,
-      notes: 'Sin novedades',
+      notes: '',
       entryDate: new Date().toISOString().split('T')[0],
       category: 'RACK',
       zoneName: 'Rack Izquierda',
@@ -65,6 +65,9 @@ export default function InventoryPage() {
   const [selectedPendingContainerId, setSelectedPendingContainerId] =
     useState<string>('');
   const [dischargeWarehouseId, setDischargeWarehouseId] = useState<string>('');
+  const [generalEntryDate, setGeneralEntryDate] = useState<string>(
+    new Date().toISOString().split('T')[0],
+  );
   const [physicalControlItems, setPhysicalControlItems] = useState<any[]>([]);
 
   // Mantenimiento Ubicaciones
@@ -114,19 +117,34 @@ export default function InventoryPage() {
         }
 
         if (container.items) {
+          const defaultLoc = locations[0]?.id || '';
           setPhysicalControlItems(
-            container.items.map((i: any) => ({
-              ...i,
-              entryDate: new Date().toISOString().split('T')[0],
-              unitsPerBox: i.unitsPerBox || 1,
-              lengthCm: 40,
-              widthCm: 30,
-              heightCm: 30,
-              weightPerBultoKg: i.weightPerBultoKg || 10,
-              volumePerBultoM3: i.volumePerBultoM3 || 0.036,
-              bultosPerPallet: 10,
-              locationId: i.locationId || locations[0]?.id || '',
-            })),
+            container.items.map((i: any) => {
+              const qtyBultos =
+                i.quantityBultos || i.quantityBultosExpected || 1;
+              return {
+                ...i,
+                sku: i.sku || i.productSku || '',
+                description: i.description || i.productName || '',
+                quantityBultos: qtyBultos,
+                unitsPerBox: i.unitsPerBox || 1,
+                lengthCm: i.lengthCm || 40,
+                widthCm: i.widthCm || 30,
+                heightCm: i.heightCm || 30,
+                weightPerBultoKg: i.weightPerBultoKg || 10,
+                volumePerBultoM3: i.volumePerBultoM3 || 0.036,
+                hasShowroomSample: false,
+                sampleUnitsCount: 0,
+                // Pallets desglosados para este producto
+                pallets: [
+                  {
+                    palletIndex: 1,
+                    quantityBultos: qtyBultos,
+                    locationId: defaultLoc,
+                  },
+                ],
+              };
+            }),
           );
         }
       }
@@ -254,15 +272,15 @@ export default function InventoryPage() {
     setPackingList((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // Manejo de la tabla en Fase 2 (Control Físico)
+  // Manejo de la tabla en Fase 2 (Control Físico General)
   const handleUpdatePhysicalItem = (
-    index: number,
+    itemIdx: number,
     field: string,
     value: any,
   ) => {
     setPhysicalControlItems((prev) => {
       const updated = [...prev];
-      const item = { ...updated[index], [field]: value };
+      const item = { ...updated[itemIdx], [field]: value };
 
       if (field === 'lengthCm' || field === 'widthCm' || field === 'heightCm') {
         const l = field === 'lengthCm' ? Number(value) : item.lengthCm;
@@ -271,7 +289,67 @@ export default function InventoryPage() {
         item.volumePerBultoM3 = Number(((l * w * h) / 1000000).toFixed(4));
       }
 
-      updated[index] = item;
+      updated[itemIdx] = item;
+      return updated;
+    });
+  };
+
+  // Manejo de Pallets Dinámicos por Producto
+  const handleAddPalletToItem = (itemIdx: number) => {
+    setPhysicalControlItems((prev) => {
+      const updated = [...prev];
+      const item = { ...updated[itemIdx] };
+      const currentPallets = item.pallets || [];
+      const defaultLoc = locations[0]?.id || '';
+
+      const allocatedBultos = currentPallets.reduce(
+        (acc: number, p: any) => acc + (Number(p.quantityBultos) || 0),
+        0,
+      );
+      const remainingBultos = Math.max(
+        0,
+        item.quantityBultos - allocatedBultos,
+      );
+
+      item.pallets = [
+        ...currentPallets,
+        {
+          palletIndex: currentPallets.length + 1,
+          quantityBultos: remainingBultos > 0 ? remainingBultos : 1,
+          locationId: defaultLoc,
+        },
+      ];
+      updated[itemIdx] = item;
+      return updated;
+    });
+  };
+
+  const handleRemovePalletFromItem = (itemIdx: number, palletIdx: number) => {
+    setPhysicalControlItems((prev) => {
+      const updated = [...prev];
+      const item = { ...updated[itemIdx] };
+      if (item.pallets.length <= 1) return prev;
+      item.pallets = item.pallets
+        .filter((_: any, pIdx: number) => pIdx !== palletIdx)
+        .map((p: any, idx: number) => ({ ...p, palletIndex: idx + 1 }));
+      updated[itemIdx] = item;
+      return updated;
+    });
+  };
+
+  const handleUpdatePalletItem = (
+    itemIdx: number,
+    palletIdx: number,
+    field: string,
+    value: any,
+  ) => {
+    setPhysicalControlItems((prev) => {
+      const updated = [...prev];
+      const item = { ...updated[itemIdx] };
+      const pallets = [...item.pallets];
+      pallets[palletIdx] = { ...pallets[palletIdx], [field]: value };
+      item.pallets = pallets;
+      updated[itemIdx] = item;
       return updated;
     });
   };
@@ -300,41 +378,89 @@ export default function InventoryPage() {
       return;
     }
 
+    const defaultWhId = simpleWarehousesList[0]?.id;
+    if (!defaultWhId) {
+      setErrorMsg('No se encontró un depósito disponible en el sistema.');
+      return;
+    }
+
+    const fallbackLocationId = locations[0]?.id;
+
     for (let i = 0; i < packingList.length; i++) {
       if (!packingList[i].productSku || !packingList[i].productName) {
         setErrorMsg(`Indique Código SKU y Descripción en la línea #${i + 1}.`);
+        return;
+      }
+      const effectiveLoc =
+        packingList[i].locationId?.trim() || fallbackLocationId;
+      if (!effectiveLoc) {
+        setErrorMsg(
+          `La línea #${i + 1} requiere una ubicación válida y no hay ubicaciones cargadas.`,
+        );
         return;
       }
     }
 
     setSubmitting(true);
     try {
-      await inventoryService.createPackingList({
+      const payload = {
         containerNumber: containerNumber.trim(),
-        warehouseId: simpleWarehousesList[0]?.id || '',
-        items: packingList.map((item) => ({
-          productSku: item.productSku,
-          productName: item.productName,
-          quantityBultos: item.quantityBultosExpected,
-          totalUnitsExpected: item.totalUnitsExpected,
-          unitsPerBox: item.unitsPerBox || 1,
-          weightPerBultoKg: item.weightPerBultoKg || 10,
-          volumePerBultoM3: item.volumePerBultoM3 || 0.036,
-          sampleUnits: item.sampleUnits || 0,
-          notes: item.notes || '',
-          locationId: item.locationId || locations[0]?.id || '',
-        })),
-      });
+        warehouseId: defaultWhId,
+        items: packingList.map((item) => {
+          const validLocId = item.locationId?.trim() || fallbackLocationId;
+          return {
+            productSku: item.productSku,
+            productName: item.productName,
+            quantityBultos: Number(item.quantityBultosExpected) || 1,
+            unitsPerBox: Number(item.unitsPerBox) || 1,
+            weightPerBultoKg: Number(item.weightPerBultoKg) || 10,
+            volumePerBultoM3: Number(item.volumePerBultoM3) || 0.036,
+            sampleUnits: Number(item.sampleUnits) || 0,
+            notes: item.notes || '',
+            locationId: validLocId,
+          };
+        }),
+      };
+
+      await inventoryService.createPackingList(payload);
 
       setSuccessMsg(
         `Packing List para contenedor "${containerNumber}" pre-cargado con éxito.`,
       );
+
+      // RESETEAR FORMULARIO COMPLETO TRAS PRE-CARGA EXITOSA
       setContainerNumber('');
+      setPackingList([
+        {
+          productSku: '',
+          productName: '',
+          quantityBultosExpected: 1,
+          totalUnitsExpected: 1,
+          unitsPerBox: 1,
+          weightPerBultoKg: 10,
+          lengthCm: 40,
+          widthCm: 30,
+          heightCm: 30,
+          volumePerBultoM3: 0.036,
+          sampleUnits: 0,
+          notes: '',
+          entryDate: new Date().toISOString().split('T')[0],
+          category: 'RACK',
+          zoneName: 'Rack Izquierda',
+          rackLevel: 'A',
+          moduleNumber: 1,
+          locationId: locations[0]?.id || '',
+        },
+      ]);
+
       await loadData();
     } catch (err: any) {
-      setErrorMsg(
-        err.response?.data?.message || 'Error al pre-cargar el Packing List.',
-      );
+      const backendMessage = err.response?.data?.message;
+      if (Array.isArray(backendMessage)) {
+        setErrorMsg(backendMessage.join(' | '));
+      } else {
+        setErrorMsg(backendMessage || 'Error al pre-cargar el Packing List.');
+      }
     } finally {
       setSubmitting(false);
     }
@@ -358,20 +484,55 @@ export default function InventoryPage() {
     );
     if (!selectedCont) return;
 
+    // Aplanar los ítems según su desglose de pallets
+    const itemsToSubmit: any[] = [];
+    const defaultLocId = locations[0]?.id;
+
+    for (const item of physicalControlItems) {
+      const pallets = item.pallets || [];
+      const sumPalletBultos = pallets.reduce(
+        (acc: number, p: any) => acc + (Number(p.quantityBultos) || 0),
+        0,
+      );
+
+      if (sumPalletBultos !== item.quantityBultos) {
+        setErrorMsg(
+          `Atención: Para el SKU ${item.sku}, la suma de bultos por pallet (${sumPalletBultos}) no coincide con el total de bultos del producto (${item.quantityBultos}).`,
+        );
+        return;
+      }
+
+      for (const pallet of pallets) {
+        const validLocId = pallet.locationId?.trim() || defaultLocId;
+        if (!validLocId) {
+          setErrorMsg(
+            `Seleccione una ubicación válida para el pallet del SKU ${item.sku}.`,
+          );
+          return;
+        }
+
+        itemsToSubmit.push({
+          sku: item.sku,
+          description: item.description,
+          quantityBultos: Number(pallet.quantityBultos) || 1,
+          unitsPerBox: Number(item.unitsPerBox) || 1,
+          weightPerBultoKg: Number(item.weightPerBultoKg) || 10,
+          volumePerBultoM3: Number(item.volumePerBultoM3) || 0.036,
+          sampleUnits: item.hasShowroomSample
+            ? Number(item.sampleUnitsCount) || 0
+            : 0,
+          entryDate: generalEntryDate,
+          locationId: validLocId,
+          warehouseId: dischargeWarehouseId,
+        });
+      }
+    }
+
     setSubmitting(true);
     try {
       await inventoryService.processInbound(
         selectedPendingContainerId,
-        physicalControlItems.map((i: any) => ({
-          sku: i.sku,
-          description: i.description,
-          quantityBultos: i.quantityBultos,
-          unitsPerBox: i.unitsPerBox,
-          weightPerBultoKg: i.weightPerBultoKg,
-          volumePerBultoM3: i.volumePerBultoM3,
-          locationId: i.locationId || locations[0]?.id,
-          warehouseId: dischargeWarehouseId,
-        })),
+        itemsToSubmit,
       );
 
       setSuccessMsg(
@@ -657,7 +818,7 @@ export default function InventoryPage() {
                       value={containerNumber}
                       onChange={(e) => setContainerNumber(e.target.value)}
                       placeholder="Ej. MSCU-984021-3"
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white font-bold"
                     />
                   </div>
 
@@ -771,7 +932,7 @@ export default function InventoryPage() {
                   <button
                     onClick={handleSavePackingList}
                     disabled={submitting}
-                    className="px-5 py-3 bg-amber-500 text-slate-950 font-black rounded-xl text-xs shadow-lg"
+                    className="px-5 py-3 bg-amber-500 text-slate-950 font-black rounded-xl text-xs shadow-lg hover:bg-amber-400 transition-colors"
                   >
                     PRE-CARGAR PACKING LIST EN BASE DE DATOS
                   </button>
@@ -783,7 +944,7 @@ export default function InventoryPage() {
                     FASE 2: Control Móvil y Descarga Físico-Estibado
                   </h2>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                     <div>
                       <label className="block text-xs text-slate-300 mb-1">
                         Seleccionar Contenedor Arribado *
@@ -824,217 +985,345 @@ export default function InventoryPage() {
                         ))}
                       </select>
                     </div>
+
+                    {/* FECHA DE INGRESO ÚNICA PARA TODO EL LOTE */}
+                    <div>
+                      <label className="block text-xs text-slate-300 mb-1">
+                        Fecha de Ingreso / Descarga *
+                      </label>
+                      <input
+                        type="date"
+                        value={generalEntryDate}
+                        onChange={(e) => setGeneralEntryDate(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white font-bold"
+                      />
+                    </div>
                   </div>
 
                   {selectedPendingContainerId &&
                     physicalControlItems.length > 0 && (
-                      <div className="space-y-4 pt-2">
+                      <div className="space-y-6 pt-2">
                         <h3 className="text-xs font-black uppercase text-amber-400">
-                          Bloque de Control Físico por Bulto y Pallet
+                          Bloque de Control Físico por Producto y Desglose de
+                          Pallets
                         </h3>
 
-                        {physicalControlItems.map((item, idx) => (
-                          <div
-                            key={idx}
-                            className="bg-slate-950 border border-slate-800 p-4 rounded-xl space-y-3 text-xs"
-                          >
-                            <div className="flex justify-between items-center border-b border-slate-800 pb-2">
-                              <span className="font-bold text-white">
-                                SKU:{' '}
-                                <span className="text-amber-400 font-mono">
-                                  {item.sku}
-                                </span>{' '}
-                                - {item.description}
-                              </span>
-                              <button
-                                onClick={() =>
-                                  setPrintModalData({
-                                    productSku: item.sku,
-                                    productName: item.description,
-                                    quantityBultos: item.quantityBultos,
-                                    unitsPerBox: item.unitsPerBox,
-                                    containerNumber: pendingContainers.find(
-                                      (c) =>
-                                        c.id === selectedPendingContainerId,
-                                    )?.containerNumber,
-                                    locationCode:
-                                      locations.find(
-                                        (l) => l.id === item.locationId,
-                                      )?.code || 'S/U',
-                                    warehouseName: simpleWarehousesList.find(
-                                      (w) => w.id === dischargeWarehouseId,
-                                    )?.name,
-                                    weightPerBultoKg: item.weightPerBultoKg,
-                                    volumePerBultoM3: item.volumePerBultoM3,
-                                    date: item.entryDate,
-                                  })
-                                }
-                                className="px-3 py-1 bg-amber-500 text-slate-950 font-black rounded text-[11px]"
-                              >
-                                Imprimir Rótulo
-                              </button>
-                            </div>
+                        {physicalControlItems.map((item, itemIdx) => {
+                          const totalPalletBultos = (item.pallets || []).reduce(
+                            (acc: number, p: any) =>
+                              acc + (Number(p.quantityBultos) || 0),
+                            0,
+                          );
+                          const isBultosMatched =
+                            totalPalletBultos === item.quantityBultos;
 
-                            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 bg-slate-900 p-3 rounded-lg border border-slate-800">
-                              <div>
-                                <label className="block text-slate-400 mb-1">
-                                  Imagen del Bulto (Foto)
-                                </label>
-                                <input
-                                  type="file"
-                                  accept="image/*"
-                                  className="w-full text-slate-400 text-[10px]"
-                                />
-                              </div>
-
-                              <div>
-                                <label className="block text-slate-400 mb-1">
-                                  Unidades por Bulto
-                                </label>
-                                <input
-                                  type="number"
-                                  value={item.unitsPerBox}
-                                  onChange={(e) =>
-                                    handleUpdatePhysicalItem(
-                                      idx,
-                                      'unitsPerBox',
-                                      Number(e.target.value),
-                                    )
-                                  }
-                                  className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold"
-                                />
-                              </div>
-
-                              <div>
-                                <label className="block text-slate-400 mb-1">
-                                  Medidas (L x A x H cm)
-                                </label>
-                                <div className="flex gap-1">
-                                  <input
-                                    type="number"
-                                    value={item.lengthCm}
-                                    onChange={(e) =>
-                                      handleUpdatePhysicalItem(
-                                        idx,
-                                        'lengthCm',
-                                        Number(e.target.value),
-                                      )
-                                    }
-                                    className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center"
-                                  />
-                                  <input
-                                    type="number"
-                                    value={item.widthCm}
-                                    onChange={(e) =>
-                                      handleUpdatePhysicalItem(
-                                        idx,
-                                        'widthCm',
-                                        Number(e.target.value),
-                                      )
-                                    }
-                                    className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center"
-                                  />
-                                  <input
-                                    type="number"
-                                    value={item.heightCm}
-                                    onChange={(e) =>
-                                      handleUpdatePhysicalItem(
-                                        idx,
-                                        'heightCm',
-                                        Number(e.target.value),
-                                      )
-                                    }
-                                    className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center"
-                                  />
+                          return (
+                            <div
+                              key={itemIdx}
+                              className="bg-slate-950 border border-slate-800 p-4 rounded-xl space-y-4 text-xs"
+                            >
+                              <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                                <div>
+                                  <span className="font-bold text-white text-sm">
+                                    SKU:{' '}
+                                    <span className="text-amber-400 font-mono">
+                                      {item.sku}
+                                    </span>{' '}
+                                    - {item.description}
+                                  </span>
+                                  <div className="text-[11px] text-slate-400 mt-0.5">
+                                    Total bultos producto:{' '}
+                                    <strong className="text-amber-400">
+                                      {item.quantityBultos}
+                                    </strong>{' '}
+                                    | Asignados en Pallets:{' '}
+                                    <strong
+                                      className={
+                                        isBultosMatched
+                                          ? 'text-emerald-400'
+                                          : 'text-red-400'
+                                      }
+                                    >
+                                      {totalPalletBultos}
+                                    </strong>
+                                  </div>
                                 </div>
                               </div>
 
-                              <div>
-                                <label className="block text-slate-400 mb-1">
-                                  Peso Bulto (Kg)
-                                </label>
-                                <input
-                                  type="number"
-                                  value={item.weightPerBultoKg}
-                                  onChange={(e) =>
-                                    handleUpdatePhysicalItem(
-                                      idx,
-                                      'weightPerBultoKg',
-                                      Number(e.target.value),
-                                    )
-                                  }
-                                  className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold"
-                                />
+                              {/* FOTO, MEDIDAS Y MUESTRA SHOWROOM */}
+                              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 bg-slate-900 p-3 rounded-lg border border-slate-800">
+                                <div>
+                                  <label className="block text-slate-400 mb-1">
+                                    Foto del Bulto
+                                  </label>
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    className="w-full text-slate-400 text-[10px]"
+                                  />
+                                </div>
+
+                                <div>
+                                  <label className="block text-slate-400 mb-1">
+                                    Unidades por Bulto
+                                  </label>
+                                  <input
+                                    type="number"
+                                    value={item.unitsPerBox}
+                                    onChange={(e) =>
+                                      handleUpdatePhysicalItem(
+                                        itemIdx,
+                                        'unitsPerBox',
+                                        Number(e.target.value),
+                                      )
+                                    }
+                                    className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold"
+                                  />
+                                </div>
+
+                                <div>
+                                  <label className="block text-slate-400 mb-1">
+                                    Medidas (L x A x H cm)
+                                  </label>
+                                  <div className="flex gap-1">
+                                    <input
+                                      type="number"
+                                      value={item.lengthCm}
+                                      onChange={(e) =>
+                                        handleUpdatePhysicalItem(
+                                          itemIdx,
+                                          'lengthCm',
+                                          Number(e.target.value),
+                                        )
+                                      }
+                                      className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center"
+                                    />
+                                    <input
+                                      type="number"
+                                      value={item.widthCm}
+                                      onChange={(e) =>
+                                        handleUpdatePhysicalItem(
+                                          itemIdx,
+                                          'widthCm',
+                                          Number(e.target.value),
+                                        )
+                                      }
+                                      className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center"
+                                    />
+                                    <input
+                                      type="number"
+                                      value={item.heightCm}
+                                      onChange={(e) =>
+                                        handleUpdatePhysicalItem(
+                                          itemIdx,
+                                          'heightCm',
+                                          Number(e.target.value),
+                                        )
+                                      }
+                                      className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center"
+                                    />
+                                  </div>
+                                </div>
+
+                                <div>
+                                  <label className="block text-slate-400 mb-1">
+                                    Peso Bulto (Kg)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    value={item.weightPerBultoKg}
+                                    onChange={(e) =>
+                                      handleUpdatePhysicalItem(
+                                        itemIdx,
+                                        'weightPerBultoKg',
+                                        Number(e.target.value),
+                                      )
+                                    }
+                                    className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold"
+                                  />
+                                </div>
+
+                                {/* MUESTRA SHOWROOM */}
+                                <div className="sm:col-span-4 pt-2 border-t border-slate-800/60 flex flex-wrap items-center justify-between gap-3">
+                                  <label className="flex items-center gap-2 cursor-pointer text-amber-300 font-bold">
+                                    <input
+                                      type="checkbox"
+                                      checked={item.hasShowroomSample}
+                                      onChange={(e) =>
+                                        handleUpdatePhysicalItem(
+                                          itemIdx,
+                                          'hasShowroomSample',
+                                          e.target.checked,
+                                        )
+                                      }
+                                      className="w-4 h-4 accent-amber-500 rounded"
+                                    />
+                                    ¿Extrae muestra para Showroom?
+                                  </label>
+
+                                  {item.hasShowroomSample && (
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-slate-400">
+                                        Unidades para Muestra:
+                                      </span>
+                                      <input
+                                        type="number"
+                                        value={item.sampleUnitsCount}
+                                        onChange={(e) =>
+                                          handleUpdatePhysicalItem(
+                                            itemIdx,
+                                            'sampleUnitsCount',
+                                            Number(e.target.value),
+                                          )
+                                        }
+                                        placeholder="Ej. 1"
+                                        className="w-20 bg-slate-950 border border-amber-500/50 p-1.5 rounded text-amber-400 font-bold text-center text-xs"
+                                      />
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* DESGLOSE DINÁMICO DE PALLETS */}
+                              <div className="space-y-2">
+                                <div className="flex justify-between items-center">
+                                  <span className="font-bold text-slate-300 text-xs">
+                                    Configuración de Pallets / Estibado para{' '}
+                                    {item.sku}
+                                  </span>
+                                  <button
+                                    onClick={() =>
+                                      handleAddPalletToItem(itemIdx)
+                                    }
+                                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold rounded text-[11px]"
+                                  >
+                                    + Agregar Nuevo Pallet
+                                  </button>
+                                </div>
+
+                                {(item.pallets || []).map(
+                                  (pallet: any, pIdx: number) => {
+                                    const selectedLocCode =
+                                      locations.find(
+                                        (l) => l.id === pallet.locationId,
+                                      )?.code || 'S/U';
+
+                                    return (
+                                      <div
+                                        key={pIdx}
+                                        className="bg-slate-900 border border-slate-800 p-3 rounded-lg grid grid-cols-1 sm:grid-cols-12 gap-3 items-end"
+                                      >
+                                        <div className="sm:col-span-2 font-bold text-amber-400 flex items-center h-full">
+                                          Pallet #{pallet.palletIndex}
+                                        </div>
+
+                                        <div className="sm:col-span-3">
+                                          <label className="block text-slate-400 mb-1">
+                                            Bultos en este Pallet
+                                          </label>
+                                          <input
+                                            type="number"
+                                            value={pallet.quantityBultos}
+                                            onChange={(e) =>
+                                              handleUpdatePalletItem(
+                                                itemIdx,
+                                                pIdx,
+                                                'quantityBultos',
+                                                Number(e.target.value),
+                                              )
+                                            }
+                                            className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-amber-300 font-bold text-center"
+                                          />
+                                        </div>
+
+                                        <div className="sm:col-span-5">
+                                          <label className="block text-slate-400 mb-1">
+                                            Ubicación Asignada *
+                                          </label>
+                                          <select
+                                            value={pallet.locationId}
+                                            onChange={(e) =>
+                                              handleUpdatePalletItem(
+                                                itemIdx,
+                                                pIdx,
+                                                'locationId',
+                                                e.target.value,
+                                              )
+                                            }
+                                            className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold"
+                                          >
+                                            {locations.map((loc) => (
+                                              <option
+                                                key={loc.id}
+                                                value={loc.id}
+                                              >
+                                                {loc.code} ({loc.zoneName})
+                                              </option>
+                                            ))}
+                                          </select>
+                                        </div>
+
+                                        <div className="sm:col-span-2 flex gap-1 justify-end">
+                                          <button
+                                            onClick={() =>
+                                              setPrintModalData({
+                                                productSku: item.sku,
+                                                productName: item.description,
+                                                quantityBultos:
+                                                  pallet.quantityBultos,
+                                                unitsPerBox: item.unitsPerBox,
+                                                containerNumber:
+                                                  pendingContainers.find(
+                                                    (c) =>
+                                                      c.id ===
+                                                      selectedPendingContainerId,
+                                                  )?.containerNumber,
+                                                locationCode: selectedLocCode,
+                                                warehouseName:
+                                                  simpleWarehousesList.find(
+                                                    (w) =>
+                                                      w.id ===
+                                                      dischargeWarehouseId,
+                                                  )?.name,
+                                                weightPerBultoKg:
+                                                  item.weightPerBultoKg,
+                                                volumePerBultoM3:
+                                                  item.volumePerBultoM3,
+                                                date: generalEntryDate,
+                                              })
+                                            }
+                                            className="px-2 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded text-[10px] flex-1 text-center"
+                                          >
+                                            Rótulo
+                                          </button>
+
+                                          {item.pallets.length > 1 && (
+                                            <button
+                                              onClick={() =>
+                                                handleRemovePalletFromItem(
+                                                  itemIdx,
+                                                  pIdx,
+                                                )
+                                              }
+                                              className="px-2 py-2 bg-red-950 border border-red-800 text-red-400 hover:bg-red-900 rounded font-bold"
+                                            >
+                                              X
+                                            </button>
+                                          )}
+                                        </div>
+                                      </div>
+                                    );
+                                  },
+                                )}
                               </div>
                             </div>
-
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-900 p-3 rounded-lg border border-slate-800">
-                              <div>
-                                <label className="block text-slate-400 mb-1">
-                                  Fecha de Ingreso
-                                </label>
-                                <input
-                                  type="date"
-                                  value={item.entryDate}
-                                  onChange={(e) =>
-                                    handleUpdatePhysicalItem(
-                                      idx,
-                                      'entryDate',
-                                      e.target.value,
-                                    )
-                                  }
-                                  className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white"
-                                />
-                              </div>
-
-                              <div>
-                                <label className="block text-slate-400 mb-1">
-                                  Bultos por Pallet
-                                </label>
-                                <input
-                                  type="number"
-                                  value={item.bultosPerPallet}
-                                  onChange={(e) =>
-                                    handleUpdatePhysicalItem(
-                                      idx,
-                                      'bultosPerPallet',
-                                      Number(e.target.value),
-                                    )
-                                  }
-                                  className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-amber-400 font-bold"
-                                />
-                              </div>
-
-                              <div>
-                                <label className="block text-slate-400 mb-1">
-                                  Ubicación Asignada *
-                                </label>
-                                <select
-                                  value={item.locationId}
-                                  onChange={(e) =>
-                                    handleUpdatePhysicalItem(
-                                      idx,
-                                      'locationId',
-                                      e.target.value,
-                                    )
-                                  }
-                                  className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold"
-                                >
-                                  {locations.map((loc) => (
-                                    <option key={loc.id} value={loc.id}>
-                                      {loc.code} ({loc.zoneName})
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
 
                         <button
                           onClick={handleProcessInboundDischarge}
                           disabled={submitting}
-                          className="w-full py-3.5 bg-amber-500 text-slate-950 font-black rounded-xl text-xs shadow-lg"
+                          className="w-full py-3.5 bg-amber-500 text-slate-950 font-black rounded-xl text-xs shadow-lg hover:bg-amber-400 transition-colors"
                         >
                           CONFIRMAR DESCARGA E INGRESO AL STOCK
                         </button>
@@ -1439,7 +1728,6 @@ export default function InventoryPage() {
                                 </div>
                               </div>
 
-                              {/* EDICIÓN RÁPIDA DE CAPACIDAD M3 POR RACK */}
                               <div className="flex items-center gap-2">
                                 <span className="text-[10px] text-slate-400 font-bold">
                                   Capacidad:
