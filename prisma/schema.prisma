@@ -68,6 +68,12 @@ enum PaymentTerm {
     DEPOSITO
 }
 
+enum InboundStatus {
+    PENDIENTE
+    RECIBIDO
+    CANCELADO
+}
+
 // ==========================================
 // USUARIOS Y ROLES
 // ==========================================
@@ -105,10 +111,11 @@ model Warehouse {
     address  String? @db.VarChar(255)
     isActive Boolean @default(true) @map("is_active")
 
-    locations      Location[]
-    inventories    Inventory[]
-    sourceOrders   Order[]         @relation("SourceWarehouse")
-    stockMovements StockMovement[]
+    locations         Location[]
+    inventories       Inventory[]
+    sourceOrders      Order[]            @relation("SourceWarehouse")
+    stockMovements    StockMovement[]
+    inboundContainers InboundContainer[]
 
     createdAt DateTime @default(now()) @map("created_at")
     updatedAt DateTime @updatedAt @map("updated_at")
@@ -128,10 +135,11 @@ model Location {
     notes       String?      @db.VarChar(255)
     isBlocked   Boolean      @default(false) @map("is_blocked")
 
-    warehouse       Warehouse       @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+    warehouse       Warehouse              @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
     inventories     Inventory[]
-    sourceMovements StockMovement[] @relation("SourceLocation")
-    targetMovements StockMovement[] @relation("TargetLocation")
+    sourceMovements StockMovement[]        @relation("SourceLocation")
+    targetMovements StockMovement[]        @relation("TargetLocation")
+    containerItems  InboundContainerItem[]
 
     createdAt DateTime @default(now()) @map("created_at")
     updatedAt DateTime @updatedAt @map("updated_at")
@@ -156,9 +164,10 @@ model Product {
     weightKg    Decimal @default(0.00) @map("weight_kg") @db.Decimal(10, 2)
     volumeM3    Decimal @default(0.00) @map("volume_m3") @db.Decimal(10, 4)
 
-    inventories Inventory[]
-    orderItems  OrderItem[]
-    movements   StockMovement[]
+    inventories    Inventory[]
+    orderItems     OrderItem[]
+    movements      StockMovement[]
+    containerItems InboundContainerItem[]
 
     createdAt DateTime @default(now()) @map("created_at")
     updatedAt DateTime @updatedAt @map("updated_at")
@@ -211,6 +220,55 @@ model StockMovement {
 
     @@index([warehouseId, productId])
     @@map("stock_movements")
+}
+
+// ==========================================
+// CONTENEDORES E INBOUND (PACKING LIST)
+// ==========================================
+
+model InboundContainer {
+    id              String        @id @default(uuid()) @db.Uuid
+    containerNumber String        @map("container_number") @db.VarChar(100)
+    warehouseId     String        @map("warehouse_id") @db.Uuid
+    status          InboundStatus @default(PENDIENTE)
+    arrivalDate     DateTime?     @map("arrival_date")
+    dischargeDate   DateTime?     @map("discharge_date")
+    notes           String?       @db.Text
+
+    warehouse Warehouse              @relation(fields: [warehouseId], references: [id])
+    items     InboundContainerItem[]
+
+    createdAt DateTime @default(now()) @map("created_at")
+    updatedAt DateTime @updatedAt @map("updated_at")
+
+    @@map("inbound_containers")
+}
+
+model InboundContainerItem {
+    id          String  @id @default(uuid()) @db.Uuid
+    containerId String  @map("container_id") @db.Uuid
+    productId   String? @map("product_id") @db.Uuid
+    locationId  String? @map("location_id") @db.Uuid
+
+    sku              String  @db.VarChar(100)
+    description      String  @db.VarChar(200)
+    quantityBultos   Int     @default(0) @map("quantity_bultos")
+    unitsPerBox      Int     @default(1) @map("units_per_box")
+    totalUnits       Int     @default(0) @map("total_units")
+    weightPerBultoKg Decimal @default(0.00) @map("weight_per_bulto_kg") @db.Decimal(10, 2)
+    volumePerBultoM3 Decimal @default(0.00) @map("volume_per_bulto_m3") @db.Decimal(10, 4)
+    sampleUnits      Int     @default(0) @map("sample_units")
+    imageUrl         String? @map("image_url") @db.VarChar(255)
+    notes            String? @db.Text
+
+    container InboundContainer @relation(fields: [containerId], references: [id], onDelete: Cascade)
+    product   Product?         @relation(fields: [productId], references: [id])
+    location  Location?        @relation(fields: [locationId], references: [id])
+
+    createdAt DateTime @default(now()) @map("created_at")
+    updatedAt DateTime @updatedAt @map("updated_at")
+
+    @@map("inbound_container_items")
 }
 
 // ==========================================
@@ -288,7 +346,7 @@ model Order {
     addressId         String  @map("address_id") @db.Uuid
     sourceWarehouseId String  @map("source_warehouse_id") @db.Uuid
     sellerId          String? @map("seller_id") @db.Uuid
-    pickerId          String? @map("picker_id") @db.Uuid // Picker principal o coordinador
+    pickerId          String? @map("picker_id") @db.Uuid
     routeId           String? @map("route_id") @db.Uuid
     transportId       String? @map("transport_id") @db.Uuid
 
@@ -324,7 +382,7 @@ model OrderItem {
     id        String  @id @default(uuid()) @db.Uuid
     orderId   String  @map("order_id") @db.Uuid
     productId String  @map("product_id") @db.Uuid
-    pickerId  String? @map("picker_id") @db.Uuid // Asignación individual para armados en equipo
+    pickerId  String? @map("picker_id") @db.Uuid
 
     bultos     Int
     totalUnits Int     @map("total_units")

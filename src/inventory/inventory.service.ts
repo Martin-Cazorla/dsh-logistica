@@ -6,15 +6,24 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { TransferStockDto } from './dto/transfer-stock.dto';
+import { InboundDto, CreateWarehouseDto } from './dto/inbound.dto';
+
+interface InventoryReduceItem {
+  quantity: number;
+  product?: {
+    volumeM3?: any;
+  } | null;
+}
+
+interface ContainerItemSum {
+  quantityBultos: number;
+  totalUnits: number;
+}
 
 @Injectable()
 export class InventoryService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /**
-   * Resumen de Ocupación por Depósitos con Cálculo de Sobreexigencia (>100%)
-   */
   async getOccupancySummary() {
     const warehouses = await this.prisma.warehouse.findMany({
       include: {
@@ -38,12 +47,15 @@ export class InventoryService {
         const locMaxM3 = loc.capacity || 10;
         totalCapacityM3 += locMaxM3;
 
-        const locUsedM3 = loc.inventories.reduce((acc, inv) => {
-          const m3PerUnit = inv.product?.volumeM3
-            ? Number(inv.product.volumeM3)
-            : 0.05;
-          return acc + inv.quantity * m3PerUnit;
-        }, 0);
+        const locUsedM3 = loc.inventories.reduce(
+          (acc: number, inv: InventoryReduceItem) => {
+            const m3PerUnit = inv.product?.volumeM3
+              ? Number(inv.product.volumeM3)
+              : 0.05;
+            return acc + inv.quantity * m3PerUnit;
+          },
+          0,
+        );
 
         usedCapacityM3 += locUsedM3;
         const occupancyPercentage =
@@ -85,7 +97,6 @@ export class InventoryService {
         totalCapacityM3 > 0
           ? Math.round((usedCapacityM3 / totalCapacityM3) * 100)
           : 0;
-      const isOverloaded = occupancyPercentage > 100;
 
       return {
         id: wh.id,
@@ -94,7 +105,7 @@ export class InventoryService {
         totalCapacityM3: Number(totalCapacityM3.toFixed(2)),
         usedCapacityM3: Number(usedCapacityM3.toFixed(2)),
         occupancyPercentage,
-        isOverloaded,
+        isOverloaded: occupancyPercentage > 100,
         totalLocations,
         occupiedLocations,
         locations: mappedLocations,
@@ -104,7 +115,136 @@ export class InventoryService {
 
   async getWarehousesList() {
     return this.prisma.warehouse.findMany({
-      select: { id: true, name: true, address: true },
+      select: { id: true, name: true, address: true, code: true },
+      orderBy: { name: 'asc' },
+    });
+  }
+
+  async createWarehouse(dto: CreateWarehouseDto) {
+    const cleanName = dto.name.trim();
+    if (!cleanName) {
+      throw new BadRequestException('El nombre del depósito es obligatorio.');
+    }
+
+    const baseCode =
+      cleanName
+        .replace(/[^a-zA-Z0-9]/g, '')
+        .substring(0, 4)
+        .toUpperCase() || 'DEP';
+    const randomSuffix = Math.floor(1000 + Math.random() * 9000);
+    const generatedCode = dto.code || `${baseCode}-${randomSuffix}`;
+
+    return this.prisma.warehouse.create({
+      data: {
+        code: generatedCode,
+        name: cleanName,
+        address: dto.address || null,
+      },
+    });
+  }
+
+  async deleteWarehouse(warehouseId: string) {
+    const invCount = await this.prisma.inventory.count({
+      where: { warehouseId },
+    });
+    if (invCount > 0) {
+      throw new BadRequestException(
+        'No se puede eliminar un depósito que posee stock activo.',
+      );
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.location.deleteMany({ where: { warehouseId } });
+      await tx.warehouse.delete({ where: { id: warehouseId } });
+    });
+  }
+
+  async getLocationsByWarehouse(warehouseId: string) {
+    const locations = await this.prisma.location.findMany({
+      where: { warehouseId },
+      orderBy: { code: 'asc' },
+    });
+    return locations.map((loc) => {
+      const isRack =
+        loc.rack && ['A', 'B', 'C', 'D', 'E'].includes(loc.rack.toUpperCase());
+      const isTecho =
+        loc.aisle?.toUpperCase().includes('TECHO') ||
+        loc.code.toUpperCase().includes('TECHO');
+
+      return {
+        id: loc.id,
+        warehouseId: loc.warehouseId,
+        code: loc.code,
+        category: isRack ? 'RACK' : isTecho ? 'TECHO' : 'PASILLO',
+        zoneName: loc.aisle || loc.notes || 'Zona General',
+        rackLevel: loc.rack || 'A',
+        moduleNumber: loc.position ? parseInt(loc.position, 10) || 1 : 1,
+        maxCapacityM3: loc.capacity || 10,
+        usedCapacityM3: 0,
+        occupancyPercentage: 0,
+        status: 'DISPONIBLE',
+        comments: loc.notes || undefined,
+      };
+    });
+  }
+
+  async generateLocationsBatch(dto: {
+    warehouseId: string;
+    category: 'RACK' | 'PASILLO' | 'TECHO';
+    areaName: string;
+    levels: string[];
+    positionStart: number;
+    positionEnd: number;
+    maxCapacityM3PerUnit: number;
+  }) {
+    const {
+      warehouseId,
+      category,
+      areaName,
+      levels,
+      positionStart,
+      positionEnd,
+      maxCapacityM3PerUnit,
+    } = dto;
+    const locationsToCreate = [];
+    const cleanArea = (areaName || 'GENERAL')
+      .replace(/\s+/g, '-')
+      .toUpperCase();
+    const capacityVal = Math.round(Number(maxCapacityM3PerUnit)) || 2;
+
+    for (const level of levels) {
+      for (let pos = Number(positionStart); pos <= Number(positionEnd); pos++) {
+        const code = `${category}-${cleanArea}-${level}${pos}`;
+
+        locationsToCreate.push({
+          warehouseId,
+          code,
+          aisle: areaName || 'General',
+          rack: level,
+          position: String(pos),
+          capacity: capacityVal,
+        });
+      }
+    }
+
+    return this.prisma.location.createMany({
+      data: locationsToCreate,
+      skipDuplicates: true,
+    });
+  }
+
+  async deleteLocationsBatch(locationIds: string[]) {
+    const invCount = await this.prisma.inventory.count({
+      where: { locationId: { in: locationIds } },
+    });
+    if (invCount > 0) {
+      throw new BadRequestException(
+        'Existen ubicaciones seleccionadas con stock activo.',
+      );
+    }
+
+    return this.prisma.location.deleteMany({
+      where: { id: { in: locationIds } },
     });
   }
 
@@ -145,6 +285,7 @@ export class InventoryService {
         locationId: inv.locationId,
         locationCode: inv.location ? inv.location.code : 'Sin Ubicación',
         quantityBultos: inv.quantity,
+        unitsPerBox: inv.product.unitsPerBox || 1,
         weightPerBultoKg: weightKg,
         volumePerBultoM3: volumeM3,
         totalWeightKg: inv.quantity * weightKg,
@@ -154,70 +295,133 @@ export class InventoryService {
     });
   }
 
-  async getLocationsByWarehouse(warehouseId: string) {
-    const locations = await this.prisma.location.findMany({
-      where: { warehouseId },
-    });
-    return locations.map((loc) => {
-      const isRack =
-        loc.rack && ['A', 'B', 'C', 'D', 'E'].includes(loc.rack.toUpperCase());
-      const isTecho =
-        loc.aisle?.toUpperCase().includes('TECHO') ||
-        loc.code.toUpperCase().includes('TECHO');
+  // FASE 1: PRE-CARGA DE PACKING LIST
+  async createPackingList(dto: InboundDto) {
+    const { containerNumber, warehouseId, items } = dto;
 
-      return {
-        id: loc.id,
-        warehouseId: loc.warehouseId,
-        code: loc.code,
-        category: isRack ? 'RACK' : isTecho ? 'TECHO' : 'PASILLO',
-        zoneName: loc.aisle || loc.notes || 'Zona General',
-        rackLevel: loc.rack || 'A',
-        moduleNumber: loc.position ? parseInt(loc.position, 10) || 1 : 1,
-        maxCapacityM3: loc.capacity || 10,
-        usedCapacityM3: 0,
-        occupancyPercentage: 0,
-        status: 'DISPONIBLE',
-        comments: loc.notes || undefined,
-      };
+    if (!containerNumber) {
+      throw new BadRequestException('El número de contenedor es obligatorio.');
+    }
+
+    return this.prisma.inboundContainer.create({
+      data: {
+        containerNumber,
+        warehouseId,
+        status: 'PENDIENTE',
+        items: {
+          create: items.map((item) => ({
+            sku: item.productSku,
+            description: item.productName,
+            quantityBultos: item.quantityBultos,
+            unitsPerBox: item.unitsPerBox || 1,
+            totalUnits: item.quantityBultos * (item.unitsPerBox || 1),
+            weightPerBultoKg: item.weightPerBultoKg,
+            volumePerBultoM3: item.volumePerBultoM3,
+            sampleUnits: item.sampleUnits || 0,
+            notes: item.notes || null,
+            locationId: item.locationId || null,
+          })),
+        },
+      },
+      include: { items: true },
     });
   }
 
-  async processInbound(dto: any, userId?: string) {
-    const { warehouseId, containerNumber, items } = dto;
+  // OBTENER HISTORIAL DE CONTENEDORES
+  async getContainersHistory(status?: string) {
+    const whereClause: any = {};
+    if (status) whereClause.status = status as any;
 
-    let effectiveUserId = userId;
-    if (!effectiveUserId) {
-      const defaultUser = await this.prisma.user.findFirst();
-      if (!defaultUser)
-        throw new BadRequestException(
-          'No hay usuarios registrados en el sistema.',
-        );
-      effectiveUserId = defaultUser.id;
+    const containers = await this.prisma.inboundContainer.findMany({
+      where: whereClause,
+      include: {
+        warehouse: true,
+        items: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return containers.map((c: any) => ({
+      id: c.id,
+      containerNumber: c.containerNumber,
+      warehouseId: c.warehouseId,
+      warehouseName: c.warehouse.name,
+      status: c.status,
+      arrivalDate: c.createdAt,
+      dischargeDate: c.dischargeDate,
+      totalBultos: c.items.reduce(
+        (acc: number, i: ContainerItemSum) => acc + i.quantityBultos,
+        0,
+      ),
+      totalUnits: c.items.reduce(
+        (acc: number, i: ContainerItemSum) => acc + i.totalUnits,
+        0,
+      ),
+      items: c.items.map((i: any) => ({
+        id: i.id,
+        sku: i.sku,
+        description: i.description,
+        quantityBultos: i.quantityBultos,
+        unitsPerBox: i.unitsPerBox,
+        totalUnits: i.totalUnits,
+        weightPerBultoKg: Number(i.weightPerBultoKg),
+        volumePerBultoM3: Number(i.volumePerBultoM3),
+        locationId: i.locationId,
+      })),
+    }));
+  }
+
+  // ELIMINAR / ANULAR CONTENEDOR
+  async deleteContainer(containerId: string) {
+    const container = await this.prisma.inboundContainer.findUnique({
+      where: { id: containerId },
+    });
+
+    if (!container) throw new NotFoundException('Contenedor no encontrado.');
+    if (container.status === 'RECIBIDO') {
+      throw new BadRequestException(
+        'No se puede eliminar un contenedor que ya fue recibido e ingresado al stock.',
+      );
     }
+
+    return this.prisma.inboundContainer.delete({ where: { id: containerId } });
+  }
+
+  // FASE 2: PROCESAR ESTIBADO MÓVIL
+  async processInbound(dto: { containerId: string; items: any[] }) {
+    const { containerId, items } = dto;
+
+    const container = await this.prisma.inboundContainer.findUnique({
+      where: { id: containerId },
+    });
+
+    if (!container) throw new NotFoundException('Contenedor no encontrado.');
+
+    const defaultUser = await this.prisma.user.findFirst();
+    if (!defaultUser)
+      throw new BadRequestException('No hay usuarios en el sistema.');
 
     return this.prisma.$transaction(async (tx) => {
       for (const item of items) {
         let product = await tx.product.findUnique({
-          where: { sku: item.productSku },
+          where: { sku: item.sku },
         });
 
         if (!product) {
           product = await tx.product.create({
             data: {
-              sku: item.productSku,
-              name: item.productName,
-              barcode: item.eanCode || null,
+              sku: item.sku,
+              name: item.description,
+              unitsPerBox: item.unitsPerBox || 1,
               weightKg: item.weightPerBultoKg,
               volumeM3: item.volumePerBultoM3,
-              unitsPerBox: 1,
-              unitPrice: 0,
             },
           });
         }
 
         const existingInv = await tx.inventory.findFirst({
           where: {
-            warehouseId,
+            warehouseId: container.warehouseId,
             productId: product.id,
             locationId: item.locationId,
           },
@@ -228,17 +432,17 @@ export class InventoryService {
             where: { id: existingInv.id },
             data: {
               quantity: existingInv.quantity + item.quantityBultos,
-              lotNumber: containerNumber || existingInv.lotNumber,
+              lotNumber: container.containerNumber,
             },
           });
         } else {
           await tx.inventory.create({
             data: {
-              warehouseId,
+              warehouseId: container.warehouseId,
               productId: product.id,
               locationId: item.locationId,
               quantity: item.quantityBultos,
-              lotNumber: containerNumber || null,
+              lotNumber: container.containerNumber,
             },
           });
         }
@@ -246,238 +450,26 @@ export class InventoryService {
         await tx.stockMovement.create({
           data: {
             productId: product.id,
-            warehouseId,
-            userId: effectiveUserId,
+            warehouseId: container.warehouseId,
+            userId: defaultUser.id,
             type: 'INBOUND',
             quantity: item.quantityBultos,
+            referenceCode: container.containerNumber,
           },
         });
       }
-    });
-  }
 
-  async moveStock(dto: {
-    inventoryStockId: string;
-    targetLocationId: string;
-    quantityBultosToMove: number;
-  }) {
-    const { inventoryStockId, targetLocationId, quantityBultosToMove } = dto;
-
-    return this.prisma.$transaction(async (tx) => {
-      const sourceInv = await tx.inventory.findUnique({
-        where: { id: inventoryStockId },
-      });
-
-      if (!sourceInv || sourceInv.quantity < quantityBultosToMove) {
-        throw new BadRequestException(
-          'Cantidad insuficiente en la posición de origen.',
-        );
-      }
-
-      if (sourceInv.quantity === quantityBultosToMove) {
-        await tx.inventory.delete({ where: { id: inventoryStockId } });
-      } else {
-        await tx.inventory.update({
-          where: { id: inventoryStockId },
-          data: { quantity: sourceInv.quantity - quantityBultosToMove },
-        });
-      }
-
-      const targetInv = await tx.inventory.findFirst({
-        where: {
-          warehouseId: sourceInv.warehouseId,
-          productId: sourceInv.productId,
-          locationId: targetLocationId,
+      await tx.inboundContainer.update({
+        where: { id: containerId },
+        data: {
+          status: 'RECIBIDO',
+          dischargeDate: new Date(),
         },
       });
 
-      if (targetInv) {
-        await tx.inventory.update({
-          where: { id: targetInv.id },
-          data: { quantity: targetInv.quantity + quantityBultosToMove },
-        });
-      } else {
-        await tx.inventory.create({
-          data: {
-            warehouseId: sourceInv.warehouseId,
-            productId: sourceInv.productId,
-            locationId: targetLocationId,
-            quantity: quantityBultosToMove,
-            lotNumber: sourceInv.lotNumber,
-          },
-        });
-      }
-    });
-  }
-
-  async transferStock(dto: TransferStockDto) {
-    return this.prisma.$transaction(async (tx) => {
-      const sourceInv = await tx.inventory.findFirst({
-        where: { warehouseId: dto.originWarehouseId, productId: dto.productId },
-      });
-
-      if (!sourceInv || sourceInv.quantity < dto.quantity) {
-        throw new BadRequestException(
-          'Stock insuficiente en depósito de origen.',
-        );
-      }
-
-      await tx.inventory.update({
-        where: { id: sourceInv.id },
-        data: { quantity: sourceInv.quantity - dto.quantity },
-      });
-
-      const targetInv = await tx.inventory.findFirst({
-        where: {
-          warehouseId: dto.destinationWarehouseId,
-          productId: dto.productId,
-        },
-      });
-
-      if (targetInv) {
-        await tx.inventory.update({
-          where: { id: targetInv.id },
-          data: { quantity: targetInv.quantity + dto.quantity },
-        });
-      } else {
-        const defaultLocation = await tx.location.findFirst({
-          where: { warehouseId: dto.destinationWarehouseId },
-        });
-
-        if (!defaultLocation)
-          throw new BadRequestException(
-            'El depósito destino no posee ubicaciones.',
-          );
-
-        await tx.inventory.create({
-          data: {
-            warehouseId: dto.destinationWarehouseId,
-            productId: dto.productId,
-            locationId: defaultLocation.id,
-            quantity: dto.quantity,
-          },
-        });
-      }
-    });
-  }
-
-  async getInventoryByWarehouse(warehouseId: string) {
-    return this.prisma.inventory.findMany({
-      where: { warehouseId },
-      include: { product: true, location: true },
-    });
-  }
-
-  async createWarehouse(dto: {
-    name: string;
-    code?: string;
-    address?: string;
-  }) {
-    const generatedCode =
-      dto.code ||
-      dto.name.substring(0, 3).toUpperCase() +
-        Math.floor(100 + Math.random() * 900);
-    return this.prisma.warehouse.create({
-      data: {
-        code: generatedCode,
-        name: dto.name,
-        address: dto.address || null,
-      },
-    });
-  }
-
-  async deleteWarehouse(warehouseId: string) {
-    const invCount = await this.prisma.inventory.count({
-      where: { warehouseId },
-    });
-    if (invCount > 0) {
-      throw new BadRequestException(
-        'No se puede eliminar un depósito que posee stock activo.',
-      );
-    }
-
-    return this.prisma.$transaction(async (tx) => {
-      await tx.location.deleteMany({ where: { warehouseId } });
-      await tx.warehouse.delete({ where: { id: warehouseId } });
-    });
-  }
-
-  async generateLocationsBatch(dto: {
-    warehouseId: string;
-    category: 'RACK' | 'PASILLO' | 'TECHO';
-    areaName: string;
-    levels: string[];
-    positionStart: number;
-    positionEnd: number;
-    maxCapacityM3PerUnit: number;
-  }) {
-    const {
-      warehouseId,
-      category,
-      areaName,
-      levels,
-      positionStart,
-      positionEnd,
-      maxCapacityM3PerUnit,
-    } = dto;
-    const locationsToCreate = [];
-
-    const cleanArea = (areaName || 'GENERAL')
-      .replace(/\s+/g, '-')
-      .toUpperCase();
-    const capacityVal = Number(maxCapacityM3PerUnit) || 2.5;
-
-    for (const level of levels) {
-      for (let pos = Number(positionStart); pos <= Number(positionEnd); pos++) {
-        let code = '';
-        if (category === 'RACK') {
-          code = `RACK-${cleanArea}-${level}${pos}`;
-        } else if (category === 'PASILLO') {
-          code = `PASILLO-${cleanArea}-${level}${pos}`;
-        } else {
-          code = `TECHO-${cleanArea}-${level}${pos}`;
-        }
-
-        locationsToCreate.push({
-          warehouseId,
-          code,
-          aisle: areaName || 'General',
-          rack: level,
-          position: String(pos), // Prisma exige tipo String
-          capacity: capacityVal,
-        });
-      }
-    }
-
-    return this.prisma.location.createMany({
-      data: locationsToCreate,
-      skipDuplicates: true,
-    });
-  }
-
-  async deleteLocationsBatch(locationIds: string[]) {
-    const invCount = await this.prisma.inventory.count({
-      where: { locationId: { in: locationIds } },
-    });
-    if (invCount > 0) {
-      throw new BadRequestException(
-        'Existen ubicaciones seleccionadas que poseen bultos en inventario.',
-      );
-    }
-
-    return this.prisma.location.deleteMany({
-      where: { id: { in: locationIds } },
-    });
-  }
-
-  async clearAllInventoryData() {
-    return this.prisma.$transaction(async (tx) => {
-      await tx.stockMovement.deleteMany({});
-      await tx.inventory.deleteMany({});
-      await tx.location.deleteMany({});
-      await tx.warehouse.deleteMany({});
       return {
-        message: 'Todos los datos de inventario y depósitos fueron eliminados.',
+        success: true,
+        message: 'Contenedor procesado e ingresado al stock correctamente.',
       };
     });
   }

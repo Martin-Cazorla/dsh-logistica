@@ -45,6 +45,7 @@ export interface InventoryStock {
   locationId: string;
   locationCode: string;
   quantityBultos: number;
+  unitsPerBox?: number;
   weightPerBultoKg: number;
   volumePerBultoM3: number;
   lengthCm?: number;
@@ -61,11 +62,17 @@ export interface PackingListItem {
   productName: string;
   eanCode?: string;
   quantityBultosExpected: number;
+  totalUnitsExpected: number;
+  unitsPerBox: number;
   weightPerBultoKg: number;
   lengthCm: number;
   widthCm: number;
   heightCm: number;
   volumePerBultoM3: number;
+  sampleUnits: number;
+  notes: string;
+  imageUrl?: string;
+  entryDate: string;
   category: LocationTypeCategory;
   zoneName: string;
   rackLevel?: string;
@@ -81,17 +88,21 @@ export interface ReceiveContainerDto {
     productName: string;
     eanCode?: string;
     quantityBultos: number;
+    unitsPerBox?: number;
     weightPerBultoKg: number;
     lengthCm?: number;
     widthCm?: number;
     heightCm?: number;
     volumePerBultoM3: number;
+    sampleUnits?: number;
+    notes?: string;
     locationId: string;
   }[];
 }
 
 export interface CreateWarehouseDto {
   name: string;
+  code?: string;
   address?: string;
 }
 
@@ -110,3 +121,28 @@ export interface MoveStockDto {
   targetLocationId: string;
   quantityBultosToMove: number;
 }
+
+export interface PalletLabelItem {
+  sku: string;
+  description: string;
+  quantityBultos: number;
+  unitsPerBox?: number;
+}
+
+export interface PalletLabelData {
+  palletId?: string;
+  containerNumber?: string;
+  warehouseName?: string;
+  locationCode?: string;
+  dateStr?: string;
+  date?: string;
+  productSku?: string;
+  productName?: string;
+  quantityBultos?: number;
+  unitsPerBox?: number;
+  weightPerBultoKg?: number;
+  volumePerBultoM3?: number;
+  items?: PalletLabelItem[];
+}
+
+export type PalletTagData = PalletLabelData;

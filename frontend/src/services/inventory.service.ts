@@ -1,75 +1,104 @@
 // frontend/src/services/inventory.service.ts
 
-import api from '@/lib/axios';
 import {
   WarehouseOccupancy,
   InventoryStock,
-  ReceiveContainerDto,
-  MoveStockDto,
   PhysicalLocation,
   CreateWarehouseDto,
   GenerateBatchLocationsDto,
+  ReceiveContainerDto,
 } from '@/types/inventory.types';
 
+const API_BASE_URL = 'http://localhost:3001/api';
+
+async function fetcher<T>(endpoint: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE_URL}${endpoint}`, {
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    ...options,
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.message || `Error en la petición ${res.status}`);
+  }
+  return res.json();
+}
+
 export const inventoryService = {
-  async getWarehouseOccupancy(): Promise<WarehouseOccupancy[]> {
-    const response = await api.get<WarehouseOccupancy[]>(
-      '/inventory/occupancy',
-    );
-    return response.data;
+  getWarehouseOccupancy: async (): Promise<WarehouseOccupancy[]> => {
+    return fetcher('/inventory/occupancy');
   },
 
-  async getWarehousesList(): Promise<{ id: string; name: string }[]> {
-    const response = await api.get<{ id: string; name: string }[]>(
-      '/inventory/warehouses',
-    );
-    return response.data;
+  getWarehousesList: async (): Promise<{ id: string; name: string }[]> => {
+    return fetcher('/inventory/warehouses');
   },
 
-  async getStockList(
+  createWarehouse: async (data: CreateWarehouseDto) => {
+    return fetcher('/inventory/warehouse', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  deleteWarehouse: async (id: string) => {
+    return fetcher(`/inventory/warehouse/${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  getAvailableLocations: async (
+    warehouseId: string,
+  ): Promise<PhysicalLocation[]> => {
+    return fetcher(`/inventory/locations/${warehouseId}`);
+  },
+
+  generateBatchLocations: async (data: GenerateBatchLocationsDto) => {
+    return fetcher('/inventory/locations/batch', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  deleteLocationsBatch: async (locationIds: string[]) => {
+    return fetcher('/inventory/locations/batch', {
+      method: 'DELETE',
+      body: JSON.stringify({ locationIds }),
+    });
+  },
+
+  getStockList: async (
     warehouseId?: string,
     search?: string,
-  ): Promise<InventoryStock[]> {
-    const response = await api.get<InventoryStock[]>('/inventory/stock', {
-      params: { warehouseId, search },
+  ): Promise<InventoryStock[]> => {
+    const params = new URLSearchParams();
+    if (warehouseId) params.append('warehouseId', warehouseId);
+    if (search) params.append('search', search);
+    const queryStr = params.toString() ? `?${params.toString()}` : '';
+    return fetcher(`/inventory/stock${queryStr}`);
+  },
+
+  // PACKING LIST Y HISTORIAL CONTENEDORES
+  createPackingList: async (data: ReceiveContainerDto) => {
+    return fetcher('/inventory/inbound/packing-list', {
+      method: 'POST',
+      body: JSON.stringify(data),
     });
-    return response.data;
   },
 
-  async receiveContainer(data: ReceiveContainerDto): Promise<void> {
-    await api.post('/inventory/inbound/receive', data);
+  getContainersHistory: async (status?: string) => {
+    const queryStr = status ? `?status=${status}` : '';
+    return fetcher(`/inventory/inbound/containers${queryStr}`);
   },
 
-  async moveStock(data: MoveStockDto): Promise<void> {
-    await api.patch('/inventory/stock/move', data);
+  deleteContainer: async (containerId: string) => {
+    return fetcher(`/inventory/inbound/container/${containerId}`, {
+      method: 'DELETE',
+    });
   },
 
-  async getAvailableLocations(
-    warehouseId: string,
-  ): Promise<PhysicalLocation[]> {
-    const response = await api.get<PhysicalLocation[]>(
-      `/inventory/locations/${warehouseId}`,
-    );
-    return response.data;
-  },
-
-  async createWarehouse(data: CreateWarehouseDto): Promise<void> {
-    await api.post('/inventory/warehouses', data);
-  },
-
-  async deleteWarehouse(warehouseId: string): Promise<void> {
-    await api.delete(`/inventory/warehouses/${warehouseId}`);
-  },
-
-  async generateBatchLocations(data: GenerateBatchLocationsDto): Promise<void> {
-    await api.post('/inventory/locations/generate-batch', data);
-  },
-
-  async deleteLocationsBatch(locationIds: string[]): Promise<void> {
-    await api.post('/inventory/locations/delete-batch', { locationIds });
-  },
-
-  async clearAllData(): Promise<void> {
-    await api.post('/inventory/clear-all');
+  processInbound: async (containerId: string, items: any[]) => {
+    return fetcher('/inventory/inbound/process', {
+      method: 'POST',
+      body: JSON.stringify({ containerId, items }),
+    });
   },
 };
