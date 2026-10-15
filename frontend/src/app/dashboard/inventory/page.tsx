@@ -36,6 +36,13 @@ export default function InventoryPage() {
     null,
   );
 
+  // Malla Ocupación: Selección de Depósito y Filtros Progresivos
+  const [selectedMallaWarehouseId, setSelectedMallaWarehouseId] = useState<
+    string | null
+  >(null);
+  const [mallaZoneFilter, setMallaZoneFilter] = useState<string>('ALL');
+  const [mallaCodeSearch, setMallaCodeSearch] = useState<string>('');
+
   // Pre-carga Inbound (Fase 1)
   const [containerNumber, setContainerNumber] = useState<string>('');
   const [packingList, setPackingList] = useState<PackingListItem[]>([
@@ -69,6 +76,13 @@ export default function InventoryPage() {
     new Date().toISOString().split('T')[0],
   );
   const [physicalControlItems, setPhysicalControlItems] = useState<any[]>([]);
+
+  // Filtros y Acordeón para Fase 2 (Control Móvil)
+  const [phase2SearchTerm, setPhase2SearchTerm] = useState<string>('');
+  const [phase2Tab, setPhase2Tab] = useState<'PENDIENTES' | 'CONTROLADOS'>(
+    'PENDIENTES',
+  );
+  const [expandedItemSkus, setExpandedItemSkus] = useState<string[]>([]);
 
   // Mantenimiento Ubicaciones
   const [newWhName, setNewWhName] = useState<string>('');
@@ -135,7 +149,7 @@ export default function InventoryPage() {
                 volumePerBultoM3: i.volumePerBultoM3 || 0.036,
                 hasShowroomSample: false,
                 sampleUnitsCount: 0,
-                // Pallets desglosados para este producto
+                isChecked: false, // Control de revisión individual
                 pallets: [
                   {
                     palletIndex: 1,
@@ -146,10 +160,12 @@ export default function InventoryPage() {
               };
             }),
           );
+          setExpandedItemSkus([]);
         }
       }
     } else {
       setPhysicalControlItems([]);
+      setExpandedItemSkus([]);
     }
   }, [
     selectedPendingContainerId,
@@ -228,6 +244,58 @@ export default function InventoryPage() {
     return Array.from(areas);
   }, [locations]);
 
+  // Selección de Depósito Activo para Malla Ocupación
+  const selectedMallaWarehouse = useMemo(() => {
+    if (!selectedMallaWarehouseId) return null;
+    return warehouses.find((w) => w.id === selectedMallaWarehouseId) || null;
+  }, [warehouses, selectedMallaWarehouseId]);
+
+  // Zonas / Racks Disponibles en el Depósito Seleccionado
+  const availableMallaZones = useMemo(() => {
+    if (!selectedMallaWarehouse) return [];
+    const zones = new Set<string>();
+    selectedMallaWarehouse.locations.forEach((loc) => {
+      if (loc.zoneName) zones.add(loc.zoneName);
+    });
+    return Array.from(zones);
+  }, [selectedMallaWarehouse]);
+
+  // Posiciones Filtradas para el Depósito Seleccionado
+  const filteredMallaLocations = useMemo(() => {
+    if (!selectedMallaWarehouse) return [];
+    return selectedMallaWarehouse.locations.filter((loc) => {
+      const matchesZone =
+        mallaZoneFilter === 'ALL' || loc.zoneName === mallaZoneFilter;
+      const matchesSearch =
+        !mallaCodeSearch.trim() ||
+        loc.code.toLowerCase().includes(mallaCodeSearch.toLowerCase().trim());
+      return matchesZone && matchesSearch;
+    });
+  }, [selectedMallaWarehouse, mallaZoneFilter, mallaCodeSearch]);
+
+  // Filtro de Productos para Fase 2 (Pendientes / Controlados y Buscador)
+  const filteredPhysicalControlItems = useMemo(() => {
+    return physicalControlItems.filter((item) => {
+      const isChecked = Boolean(item.isChecked);
+      const matchesTab = phase2Tab === 'PENDIENTES' ? !isChecked : isChecked;
+
+      const query = phase2SearchTerm.toLowerCase().trim();
+      const matchesSearch =
+        !query ||
+        item.sku.toLowerCase().includes(query) ||
+        item.description.toLowerCase().includes(query);
+
+      return matchesTab && matchesSearch;
+    });
+  }, [physicalControlItems, phase2Tab, phase2SearchTerm]);
+
+  // Manejo de la expansión individual de acordeón
+  const toggleItemAccordion = (sku: string) => {
+    setExpandedItemSkus((prev) =>
+      prev.includes(sku) ? prev.filter((s) => s !== sku) : [...prev, sku],
+    );
+  };
+
   // Manejo de la tabla dinámica en Fase 1 (Packing List)
   const handleUpdatePackingItem = (
     index: number,
@@ -290,6 +358,16 @@ export default function InventoryPage() {
       }
 
       updated[itemIdx] = item;
+      return updated;
+    });
+  };
+
+  // Cambiar estado de control de un producto (Pendiente <-> Controlado)
+  const toggleItemControlStatus = (itemIdx: number) => {
+    setPhysicalControlItems((prev) => {
+      const updated = [...prev];
+      const current = updated[itemIdx];
+      updated[itemIdx] = { ...current, isChecked: !current.isChecked };
       return updated;
     });
   };
@@ -428,7 +506,6 @@ export default function InventoryPage() {
         `Packing List para contenedor "${containerNumber}" pre-cargado con éxito.`,
       );
 
-      // RESETEAR FORMULARIO COMPLETO TRAS PRE-CARGA EXITOSA
       setContainerNumber('');
       setPackingList([
         {
@@ -484,7 +561,6 @@ export default function InventoryPage() {
     );
     if (!selectedCont) return;
 
-    // Aplanar los ítems según su desglose de pallets
     const itemsToSubmit: any[] = [];
     const defaultLocId = locations[0]?.id;
 
@@ -659,6 +735,9 @@ export default function InventoryPage() {
     }
   };
 
+  const pendingCount = physicalControlItems.filter((i) => !i.isChecked).length;
+  const checkedCount = physicalControlItems.filter((i) => i.isChecked).length;
+
   return (
     <ProtectedRoute allowedRoles={['ADMIN', 'WAREHOUSE_MANAGER', 'PICKER']}>
       <div className="min-h-screen bg-slate-950 text-slate-100 p-3 sm:p-6 font-sans">
@@ -759,45 +838,157 @@ export default function InventoryPage() {
           </div>
         ) : (
           <>
+            {/* TAB: MALLA OCUPACIÓN CON DASHBOARD Y DESGLOSE DINÁMICO */}
             {activeTab === 'MALLA' && (
               <div className="space-y-6">
-                {warehouses.map((wh) => (
-                  <div
-                    key={wh.id}
-                    className="bg-slate-900 border border-slate-800 p-5 rounded-2xl"
-                  >
-                    <div className="flex justify-between items-center mb-4 border-b border-slate-800 pb-2">
+                {!selectedMallaWarehouse ? (
+                  // VISTA 1: TARJETAS EJECUTIVAS DE DEPÓSITOS (% OCUPACIÓN)
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {warehouses.map((wh) => {
+                      const totalM3 = Number(wh.totalCapacityM3) || 1;
+                      const usedM3 = Number(wh.usedCapacityM3) || 0;
+                      const percentage = Math.min(
+                        100,
+                        Math.round((usedM3 / totalM3) * 100),
+                      );
+
+                      return (
+                        <div
+                          key={wh.id}
+                          className="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-xl flex flex-col justify-between hover:border-amber-500/50 transition-all cursor-pointer"
+                          onClick={() => setSelectedMallaWarehouseId(wh.id)}
+                        >
+                          <div>
+                            <div className="flex justify-between items-start mb-4">
+                              <div>
+                                <h2 className="text-lg font-black text-amber-400">
+                                  {wh.name}
+                                </h2>
+                                <p className="text-xs text-slate-400 mt-1">
+                                  {wh.locations.length} Posiciones Totales
+                                </p>
+                              </div>
+                              <span className="text-xs font-mono font-bold bg-slate-950 border border-slate-800 px-3 py-1 rounded-full text-slate-300">
+                                {usedM3} / {totalM3} m³
+                              </span>
+                            </div>
+
+                            <div className="space-y-2 my-4">
+                              <div className="flex justify-between text-xs font-bold">
+                                <span className="text-slate-400">
+                                  Nivel de Ocupación
+                                </span>
+                                <span
+                                  className={
+                                    percentage > 85
+                                      ? 'text-red-400'
+                                      : percentage > 60
+                                        ? 'text-amber-400'
+                                        : 'text-emerald-400'
+                                  }
+                                >
+                                  {percentage}%
+                                </span>
+                              </div>
+                              <div className="w-full bg-slate-950 h-3 rounded-full overflow-hidden border border-slate-800">
+                                <div
+                                  className={`h-full transition-all duration-500 ${
+                                    percentage > 85
+                                      ? 'bg-red-500'
+                                      : percentage > 60
+                                        ? 'bg-amber-500'
+                                        : 'bg-emerald-500'
+                                  }`}
+                                  style={{ width: `${percentage}%` }}
+                                ></div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <button className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold rounded-xl text-xs mt-2 transition-colors flex items-center justify-center gap-2">
+                            <span>Ver Mapa de Posiciones</span>
+                            <span>→</span>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  // VISTA 2: DESGLOSE FILTRADO DEL DEPÓSITO SELECCIONADO
+                  <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl space-y-6">
+                    <div className="flex flex-wrap justify-between items-center gap-4 border-b border-slate-800 pb-4">
                       <div>
-                        <h2 className="text-base font-extrabold text-amber-400">
-                          Depósito: {wh.name}
+                        <button
+                          onClick={() => {
+                            setSelectedMallaWarehouseId(null);
+                            setMallaZoneFilter('ALL');
+                            setMallaCodeSearch('');
+                          }}
+                          className="text-xs text-amber-400 font-bold hover:underline mb-1 block"
+                        >
+                          ← Volver a Resumen de Depósitos
+                        </button>
+                        <h2 className="text-xl font-black text-amber-400">
+                          Depósito: {selectedMallaWarehouse.name}
                         </h2>
                         <p className="text-xs text-slate-400">
-                          Ocupación: {wh.usedCapacityM3} m3 /{' '}
-                          {wh.totalCapacityM3} m3
+                          Ocupación: {selectedMallaWarehouse.usedCapacityM3} m³
+                          / {selectedMallaWarehouse.totalCapacityM3} m³ |{' '}
+                          {filteredMallaLocations.length} posiciones visibles
                         </p>
                       </div>
-                      <span className="text-xs bg-slate-950 border border-slate-800 px-3 py-1 rounded-full text-slate-300 font-bold">
-                        {wh.locations.length} Posiciones
-                      </span>
+
+                      <div className="flex flex-wrap gap-3 items-center">
+                        <div>
+                          <input
+                            type="text"
+                            placeholder="Buscar posición (Ej. A21)..."
+                            value={mallaCodeSearch}
+                            onChange={(e) => setMallaCodeSearch(e.target.value)}
+                            className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 font-mono"
+                          />
+                        </div>
+
+                        <div>
+                          <select
+                            value={mallaZoneFilter}
+                            onChange={(e) => setMallaZoneFilter(e.target.value)}
+                            className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-bold"
+                          >
+                            <option value="ALL">Todas las Áreas / Racks</option>
+                            {availableMallaZones.map((zone) => (
+                              <option key={zone} value={zone}>
+                                {zone}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
                     </div>
 
-                    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
-                      {wh.locations.map((loc) => (
-                        <div
-                          key={loc.id}
-                          className="p-3 rounded-xl border bg-slate-950 border-slate-800 text-xs"
-                        >
-                          <span className="font-black text-white block">
-                            {loc.code}
-                          </span>
-                          <span className="text-[10px] text-slate-400 block">
-                            {loc.zoneName} ({loc.maxCapacityM3} m3)
-                          </span>
-                        </div>
-                      ))}
-                    </div>
+                    {filteredMallaLocations.length === 0 ? (
+                      <div className="text-center py-12 text-slate-500 text-xs">
+                        No se encontraron posiciones con los filtros aplicados.
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 max-h-[550px] overflow-y-auto pr-1">
+                        {filteredMallaLocations.map((loc) => (
+                          <div
+                            key={loc.id}
+                            className="p-3 rounded-xl border bg-slate-950 border-slate-800 text-xs hover:border-slate-700 transition-colors"
+                          >
+                            <span className="font-black text-white block truncate">
+                              {loc.code}
+                            </span>
+                            <span className="text-[10px] text-slate-400 block truncate">
+                              {loc.zoneName} ({loc.maxCapacityM3} m³)
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                ))}
+                )}
               </div>
             )}
 
@@ -822,7 +1013,6 @@ export default function InventoryPage() {
                     />
                   </div>
 
-                  {/* CARGA DINÁMICA DE PRODUCTOS */}
                   <div className="space-y-3 pt-2">
                     <div className="flex justify-between items-center">
                       <span className="text-xs font-bold text-slate-300">
@@ -938,8 +1128,8 @@ export default function InventoryPage() {
                   </button>
                 </div>
 
-                {/* FASE 2: CONTROL MÓVIL Y DESCARGA FÍSICA AL ARRIBAR */}
-                <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
+                {/* FASE 2: CONTROL MÓVIL OPTIMIZADO */}
+                <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-5">
                   <h2 className="text-base font-bold text-amber-400 border-b border-slate-800 pb-2">
                     FASE 2: Control Móvil y Descarga Físico-Estibado
                   </h2>
@@ -986,7 +1176,6 @@ export default function InventoryPage() {
                       </select>
                     </div>
 
-                    {/* FECHA DE INGRESO ÚNICA PARA TODO EL LOTE */}
                     <div>
                       <label className="block text-xs text-slate-300 mb-1">
                         Fecha de Ingreso / Descarga *
@@ -1002,323 +1191,422 @@ export default function InventoryPage() {
 
                   {selectedPendingContainerId &&
                     physicalControlItems.length > 0 && (
-                      <div className="space-y-6 pt-2">
-                        <h3 className="text-xs font-black uppercase text-amber-400">
-                          Bloque de Control Físico por Producto y Desglose de
-                          Pallets
-                        </h3>
-
-                        {physicalControlItems.map((item, itemIdx) => {
-                          const totalPalletBultos = (item.pallets || []).reduce(
-                            (acc: number, p: any) =>
-                              acc + (Number(p.quantityBultos) || 0),
-                            0,
-                          );
-                          const isBultosMatched =
-                            totalPalletBultos === item.quantityBultos;
-
-                          return (
-                            <div
-                              key={itemIdx}
-                              className="bg-slate-950 border border-slate-800 p-4 rounded-xl space-y-4 text-xs"
+                      <div className="space-y-4 pt-2">
+                        {/* FILTROS Y BÚSQUEDA RÁPIDA EN FASE 2 */}
+                        <div className="flex flex-wrap justify-between items-center gap-3 bg-slate-950 p-3 rounded-xl border border-slate-800">
+                          {/* PESTAÑAS PENDIENTES / CONTROLADOS */}
+                          <div className="flex bg-slate-900 p-1 rounded-lg border border-slate-800 gap-1">
+                            <button
+                              onClick={() => setPhase2Tab('PENDIENTES')}
+                              className={`px-3 py-1.5 rounded text-xs font-bold transition-colors ${
+                                phase2Tab === 'PENDIENTES'
+                                  ? 'bg-amber-500 text-slate-950'
+                                  : 'text-slate-400 hover:text-white'
+                              }`}
                             >
-                              <div className="flex justify-between items-center border-b border-slate-800 pb-2">
-                                <div>
-                                  <span className="font-bold text-white text-sm">
-                                    SKU:{' '}
-                                    <span className="text-amber-400 font-mono">
-                                      {item.sku}
-                                    </span>{' '}
-                                    - {item.description}
-                                  </span>
-                                  <div className="text-[11px] text-slate-400 mt-0.5">
-                                    Total bultos producto:{' '}
-                                    <strong className="text-amber-400">
-                                      {item.quantityBultos}
-                                    </strong>{' '}
-                                    | Asignados en Pallets:{' '}
-                                    <strong
-                                      className={
-                                        isBultosMatched
-                                          ? 'text-emerald-400'
-                                          : 'text-red-400'
-                                      }
-                                    >
-                                      {totalPalletBultos}
-                                    </strong>
-                                  </div>
-                                </div>
-                              </div>
+                              Pendientes de Control ({pendingCount})
+                            </button>
+                            <button
+                              onClick={() => setPhase2Tab('CONTROLADOS')}
+                              className={`px-3 py-1.5 rounded text-xs font-bold transition-colors ${
+                                phase2Tab === 'CONTROLADOS'
+                                  ? 'bg-emerald-500 text-slate-950'
+                                  : 'text-slate-400 hover:text-white'
+                              }`}
+                            >
+                              Controlados ({checkedCount})
+                            </button>
+                          </div>
 
-                              {/* FOTO, MEDIDAS Y MUESTRA SHOWROOM */}
-                              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 bg-slate-900 p-3 rounded-lg border border-slate-800">
-                                <div>
-                                  <label className="block text-slate-400 mb-1">
-                                    Foto del Bulto
-                                  </label>
-                                  <input
-                                    type="file"
-                                    accept="image/*"
-                                    className="w-full text-slate-400 text-[10px]"
-                                  />
-                                </div>
+                          {/* BUSCADOR POR SKU O DESCRIPCIÓN */}
+                          <div className="flex-1 min-w-[200px]">
+                            <input
+                              type="text"
+                              placeholder="🔍 Buscar por SKU o Descripción..."
+                              value={phase2SearchTerm}
+                              onChange={(e) =>
+                                setPhase2SearchTerm(e.target.value)
+                              }
+                              className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-500 font-bold focus:border-amber-500 outline-none"
+                            />
+                          </div>
+                        </div>
 
-                                <div>
-                                  <label className="block text-slate-400 mb-1">
-                                    Unidades por Bulto
-                                  </label>
-                                  <input
-                                    type="number"
-                                    value={item.unitsPerBox}
-                                    onChange={(e) =>
-                                      handleUpdatePhysicalItem(
-                                        itemIdx,
-                                        'unitsPerBox',
-                                        Number(e.target.value),
-                                      )
-                                    }
-                                    className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold"
-                                  />
-                                </div>
+                        {/* LISTADO DE PRODUCTOS CON MODO ACCORDEÓN COMPACTO */}
+                        {filteredPhysicalControlItems.length === 0 ? (
+                          <div className="text-center py-8 text-slate-500 text-xs bg-slate-950 rounded-xl border border-slate-800">
+                            No hay productos en esta sección con los filtros
+                            actuales.
+                          </div>
+                        ) : (
+                          <div className="space-y-3">
+                            {filteredPhysicalControlItems.map((item) => {
+                              const realIdx = physicalControlItems.findIndex(
+                                (i) => i.sku === item.sku,
+                              );
+                              const isExpanded = expandedItemSkus.includes(
+                                item.sku,
+                              );
 
-                                <div>
-                                  <label className="block text-slate-400 mb-1">
-                                    Medidas (L x A x H cm)
-                                  </label>
-                                  <div className="flex gap-1">
-                                    <input
-                                      type="number"
-                                      value={item.lengthCm}
-                                      onChange={(e) =>
-                                        handleUpdatePhysicalItem(
-                                          itemIdx,
-                                          'lengthCm',
-                                          Number(e.target.value),
-                                        )
-                                      }
-                                      className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center"
-                                    />
-                                    <input
-                                      type="number"
-                                      value={item.widthCm}
-                                      onChange={(e) =>
-                                        handleUpdatePhysicalItem(
-                                          itemIdx,
-                                          'widthCm',
-                                          Number(e.target.value),
-                                        )
-                                      }
-                                      className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center"
-                                    />
-                                    <input
-                                      type="number"
-                                      value={item.heightCm}
-                                      onChange={(e) =>
-                                        handleUpdatePhysicalItem(
-                                          itemIdx,
-                                          'heightCm',
-                                          Number(e.target.value),
-                                        )
-                                      }
-                                      className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center"
-                                    />
-                                  </div>
-                                </div>
+                              const totalPalletBultos = (
+                                item.pallets || []
+                              ).reduce(
+                                (acc: number, p: any) =>
+                                  acc + (Number(p.quantityBultos) || 0),
+                                0,
+                              );
+                              const isBultosMatched =
+                                totalPalletBultos === item.quantityBultos;
 
-                                <div>
-                                  <label className="block text-slate-400 mb-1">
-                                    Peso Bulto (Kg)
-                                  </label>
-                                  <input
-                                    type="number"
-                                    value={item.weightPerBultoKg}
-                                    onChange={(e) =>
-                                      handleUpdatePhysicalItem(
-                                        itemIdx,
-                                        'weightPerBultoKg',
-                                        Number(e.target.value),
-                                      )
-                                    }
-                                    className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold"
-                                  />
-                                </div>
-
-                                {/* MUESTRA SHOWROOM */}
-                                <div className="sm:col-span-4 pt-2 border-t border-slate-800/60 flex flex-wrap items-center justify-between gap-3">
-                                  <label className="flex items-center gap-2 cursor-pointer text-amber-300 font-bold">
-                                    <input
-                                      type="checkbox"
-                                      checked={item.hasShowroomSample}
-                                      onChange={(e) =>
-                                        handleUpdatePhysicalItem(
-                                          itemIdx,
-                                          'hasShowroomSample',
-                                          e.target.checked,
-                                        )
-                                      }
-                                      className="w-4 h-4 accent-amber-500 rounded"
-                                    />
-                                    ¿Extrae muestra para Showroom?
-                                  </label>
-
-                                  {item.hasShowroomSample && (
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-slate-400">
-                                        Unidades para Muestra:
-                                      </span>
-                                      <input
-                                        type="number"
-                                        value={item.sampleUnitsCount}
-                                        onChange={(e) =>
-                                          handleUpdatePhysicalItem(
-                                            itemIdx,
-                                            'sampleUnitsCount',
-                                            Number(e.target.value),
-                                          )
-                                        }
-                                        placeholder="Ej. 1"
-                                        className="w-20 bg-slate-950 border border-amber-500/50 p-1.5 rounded text-amber-400 font-bold text-center text-xs"
-                                      />
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-
-                              {/* DESGLOSE DINÁMICO DE PALLETS */}
-                              <div className="space-y-2">
-                                <div className="flex justify-between items-center">
-                                  <span className="font-bold text-slate-300 text-xs">
-                                    Configuración de Pallets / Estibado para{' '}
-                                    {item.sku}
-                                  </span>
-                                  <button
+                              return (
+                                <div
+                                  key={item.sku}
+                                  className={`bg-slate-950 border rounded-xl transition-all ${
+                                    item.isChecked
+                                      ? 'border-emerald-500/50'
+                                      : isExpanded
+                                        ? 'border-amber-500/70 shadow-lg'
+                                        : 'border-slate-800 hover:border-slate-700'
+                                  }`}
+                                >
+                                  {/* HEADER COMPACTO CON INFORMACIÓN MÍNIMA */}
+                                  <div
                                     onClick={() =>
-                                      handleAddPalletToItem(itemIdx)
+                                      toggleItemAccordion(item.sku)
                                     }
-                                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold rounded text-[11px]"
+                                    className="p-3.5 flex flex-wrap justify-between items-center cursor-pointer gap-2 select-none"
                                   >
-                                    + Agregar Nuevo Pallet
-                                  </button>
-                                </div>
+                                    <div>
+                                      <h4 className="font-black text-white text-sm tracking-wide">
+                                        SKU:{' '}
+                                        <span className="text-amber-400 font-mono">
+                                          {item.sku}
+                                        </span>{' '}
+                                        - {item.description}
+                                      </h4>
+                                      <div className="text-xs text-slate-400 mt-1">
+                                        Total bultos producto:{' '}
+                                        <strong className="text-amber-400">
+                                          {item.quantityBultos}
+                                        </strong>{' '}
+                                        | Asignados en Pallets:{' '}
+                                        <strong
+                                          className={
+                                            isBultosMatched
+                                              ? 'text-emerald-400'
+                                              : 'text-red-400'
+                                          }
+                                        >
+                                          {totalPalletBultos}
+                                        </strong>
+                                      </div>
+                                    </div>
 
-                                {(item.pallets || []).map(
-                                  (pallet: any, pIdx: number) => {
-                                    const selectedLocCode =
-                                      locations.find(
-                                        (l) => l.id === pallet.locationId,
-                                      )?.code || 'S/U';
-
-                                    return (
-                                      <div
-                                        key={pIdx}
-                                        className="bg-slate-900 border border-slate-800 p-3 rounded-lg grid grid-cols-1 sm:grid-cols-12 gap-3 items-end"
+                                    <div className="flex items-center gap-3">
+                                      {/* BOTÓN PARA MARCAR COMO REVISADO/CONTROLADO */}
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          toggleItemControlStatus(realIdx);
+                                        }}
+                                        className={`px-3 py-1.5 rounded text-xs font-bold transition-colors ${
+                                          item.isChecked
+                                            ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                                            : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                                        }`}
                                       >
-                                        <div className="sm:col-span-2 font-bold text-amber-400 flex items-center h-full">
-                                          Pallet #{pallet.palletIndex}
-                                        </div>
+                                        {item.isChecked
+                                          ? '✓ Controlado'
+                                          : 'Marcar Controlado'}
+                                      </button>
 
-                                        <div className="sm:col-span-3">
+                                      <span className="text-amber-400 font-bold text-xs">
+                                        {isExpanded ? '▲ Ocultar' : '▼ Editar'}
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  {/* DESPLIEGUE FLUIDO DE ACCIONES DE CARGA Y ESTIBADO */}
+                                  {isExpanded && (
+                                    <div className="p-4 border-t border-slate-800 space-y-4 text-xs bg-slate-900/40 rounded-b-xl">
+                                      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 bg-slate-900 p-3 rounded-lg border border-slate-800">
+                                        <div>
                                           <label className="block text-slate-400 mb-1">
-                                            Bultos en este Pallet
+                                            Foto del Bulto
                                           </label>
                                           <input
-                                            type="number"
-                                            value={pallet.quantityBultos}
-                                            onChange={(e) =>
-                                              handleUpdatePalletItem(
-                                                itemIdx,
-                                                pIdx,
-                                                'quantityBultos',
-                                                Number(e.target.value),
-                                              )
-                                            }
-                                            className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-amber-300 font-bold text-center"
+                                            type="file"
+                                            accept="image/*"
+                                            className="w-full text-slate-400 text-[10px]"
                                           />
                                         </div>
 
-                                        <div className="sm:col-span-5">
+                                        <div>
                                           <label className="block text-slate-400 mb-1">
-                                            Ubicación Asignada *
+                                            Unidades por Bulto
                                           </label>
-                                          <select
-                                            value={pallet.locationId}
+                                          <input
+                                            type="number"
+                                            value={item.unitsPerBox}
                                             onChange={(e) =>
-                                              handleUpdatePalletItem(
-                                                itemIdx,
-                                                pIdx,
-                                                'locationId',
-                                                e.target.value,
+                                              handleUpdatePhysicalItem(
+                                                realIdx,
+                                                'unitsPerBox',
+                                                Number(e.target.value),
                                               )
                                             }
                                             className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold"
-                                          >
-                                            {locations.map((loc) => (
-                                              <option
-                                                key={loc.id}
-                                                value={loc.id}
-                                              >
-                                                {loc.code} ({loc.zoneName})
-                                              </option>
-                                            ))}
-                                          </select>
+                                          />
                                         </div>
 
-                                        <div className="sm:col-span-2 flex gap-1 justify-end">
-                                          <button
-                                            onClick={() =>
-                                              setPrintModalData({
-                                                productSku: item.sku,
-                                                productName: item.description,
-                                                quantityBultos:
-                                                  pallet.quantityBultos,
-                                                unitsPerBox: item.unitsPerBox,
-                                                containerNumber:
-                                                  pendingContainers.find(
-                                                    (c) =>
-                                                      c.id ===
-                                                      selectedPendingContainerId,
-                                                  )?.containerNumber,
-                                                locationCode: selectedLocCode,
-                                                warehouseName:
-                                                  simpleWarehousesList.find(
-                                                    (w) =>
-                                                      w.id ===
-                                                      dischargeWarehouseId,
-                                                  )?.name,
-                                                weightPerBultoKg:
-                                                  item.weightPerBultoKg,
-                                                volumePerBultoM3:
-                                                  item.volumePerBultoM3,
-                                                date: generalEntryDate,
-                                              })
-                                            }
-                                            className="px-2 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded text-[10px] flex-1 text-center"
-                                          >
-                                            Rótulo
-                                          </button>
-
-                                          {item.pallets.length > 1 && (
-                                            <button
-                                              onClick={() =>
-                                                handleRemovePalletFromItem(
-                                                  itemIdx,
-                                                  pIdx,
+                                        <div>
+                                          <label className="block text-slate-400 mb-1">
+                                            Medidas (L x A x H cm)
+                                          </label>
+                                          <div className="flex gap-1">
+                                            <input
+                                              type="number"
+                                              value={item.lengthCm}
+                                              onChange={(e) =>
+                                                handleUpdatePhysicalItem(
+                                                  realIdx,
+                                                  'lengthCm',
+                                                  Number(e.target.value),
                                                 )
                                               }
-                                              className="px-2 py-2 bg-red-950 border border-red-800 text-red-400 hover:bg-red-900 rounded font-bold"
-                                            >
-                                              X
-                                            </button>
+                                              className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center"
+                                            />
+                                            <input
+                                              type="number"
+                                              value={item.widthCm}
+                                              onChange={(e) =>
+                                                handleUpdatePhysicalItem(
+                                                  realIdx,
+                                                  'widthCm',
+                                                  Number(e.target.value),
+                                                )
+                                              }
+                                              className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center"
+                                            />
+                                            <input
+                                              type="number"
+                                              value={item.heightCm}
+                                              onChange={(e) =>
+                                                handleUpdatePhysicalItem(
+                                                  realIdx,
+                                                  'heightCm',
+                                                  Number(e.target.value),
+                                                )
+                                              }
+                                              className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center"
+                                            />
+                                          </div>
+                                        </div>
+
+                                        <div>
+                                          <label className="block text-slate-400 mb-1">
+                                            Peso Bulto (Kg)
+                                          </label>
+                                          <input
+                                            type="number"
+                                            value={item.weightPerBultoKg}
+                                            onChange={(e) =>
+                                              handleUpdatePhysicalItem(
+                                                realIdx,
+                                                'weightPerBultoKg',
+                                                Number(e.target.value),
+                                              )
+                                            }
+                                            className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold"
+                                          />
+                                        </div>
+
+                                        <div className="sm:col-span-4 pt-2 border-t border-slate-800/60 flex flex-wrap items-center justify-between gap-3">
+                                          <label className="flex items-center gap-2 cursor-pointer text-amber-300 font-bold">
+                                            <input
+                                              type="checkbox"
+                                              checked={item.hasShowroomSample}
+                                              onChange={(e) =>
+                                                handleUpdatePhysicalItem(
+                                                  realIdx,
+                                                  'hasShowroomSample',
+                                                  e.target.checked,
+                                                )
+                                              }
+                                              className="w-4 h-4 accent-amber-500 rounded"
+                                            />
+                                            ¿Extrae muestra para Showroom?
+                                          </label>
+
+                                          {item.hasShowroomSample && (
+                                            <div className="flex items-center gap-2">
+                                              <span className="text-slate-400">
+                                                Unidades para Muestra:
+                                              </span>
+                                              <input
+                                                type="number"
+                                                value={item.sampleUnitsCount}
+                                                onChange={(e) =>
+                                                  handleUpdatePhysicalItem(
+                                                    realIdx,
+                                                    'sampleUnitsCount',
+                                                    Number(e.target.value),
+                                                  )
+                                                }
+                                                placeholder="Ej. 1"
+                                                className="w-20 bg-slate-950 border border-amber-500/50 p-1.5 rounded text-amber-400 font-bold text-center text-xs"
+                                              />
+                                            </div>
                                           )}
                                         </div>
                                       </div>
-                                    );
-                                  },
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
+
+                                      {/* PALLETS / ESTIBADO */}
+                                      <div className="space-y-2">
+                                        <div className="flex justify-between items-center">
+                                          <span className="font-bold text-slate-300 text-xs">
+                                            Configuración de Pallets / Estibado
+                                            para {item.sku}
+                                          </span>
+                                          <button
+                                            onClick={() =>
+                                              handleAddPalletToItem(realIdx)
+                                            }
+                                            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold rounded text-[11px]"
+                                          >
+                                            + Agregar Nuevo Pallet
+                                          </button>
+                                        </div>
+
+                                        {(item.pallets || []).map(
+                                          (pallet: any, pIdx: number) => {
+                                            const selectedLocCode =
+                                              locations.find(
+                                                (l) =>
+                                                  l.id === pallet.locationId,
+                                              )?.code || 'S/U';
+
+                                            return (
+                                              <div
+                                                key={pIdx}
+                                                className="bg-slate-900 border border-slate-800 p-3 rounded-lg grid grid-cols-1 sm:grid-cols-12 gap-3 items-end"
+                                              >
+                                                <div className="sm:col-span-2 font-bold text-amber-400 flex items-center h-full">
+                                                  Pallet #{pallet.palletIndex}
+                                                </div>
+
+                                                <div className="sm:col-span-3">
+                                                  <label className="block text-slate-400 mb-1">
+                                                    Bultos en este Pallet
+                                                  </label>
+                                                  <input
+                                                    type="number"
+                                                    value={
+                                                      pallet.quantityBultos
+                                                    }
+                                                    onChange={(e) =>
+                                                      handleUpdatePalletItem(
+                                                        realIdx,
+                                                        pIdx,
+                                                        'quantityBultos',
+                                                        Number(e.target.value),
+                                                      )
+                                                    }
+                                                    className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-amber-300 font-bold text-center"
+                                                  />
+                                                </div>
+
+                                                <div className="sm:col-span-5">
+                                                  <label className="block text-slate-400 mb-1">
+                                                    Ubicación Asignada *
+                                                  </label>
+                                                  <select
+                                                    value={pallet.locationId}
+                                                    onChange={(e) =>
+                                                      handleUpdatePalletItem(
+                                                        realIdx,
+                                                        pIdx,
+                                                        'locationId',
+                                                        e.target.value,
+                                                      )
+                                                    }
+                                                    className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold"
+                                                  >
+                                                    {locations.map((loc) => (
+                                                      <option
+                                                        key={loc.id}
+                                                        value={loc.id}
+                                                      >
+                                                        {loc.code} (
+                                                        {loc.zoneName})
+                                                      </option>
+                                                    ))}
+                                                  </select>
+                                                </div>
+
+                                                <div className="sm:col-span-2 flex gap-1 justify-end">
+                                                  <button
+                                                    onClick={() =>
+                                                      setPrintModalData({
+                                                        productSku: item.sku,
+                                                        productName:
+                                                          item.description,
+                                                        quantityBultos:
+                                                          pallet.quantityBultos,
+                                                        unitsPerBox:
+                                                          item.unitsPerBox,
+                                                        containerNumber:
+                                                          pendingContainers.find(
+                                                            (c) =>
+                                                              c.id ===
+                                                              selectedPendingContainerId,
+                                                          )?.containerNumber,
+                                                        locationCode:
+                                                          selectedLocCode,
+                                                        warehouseName:
+                                                          simpleWarehousesList.find(
+                                                            (w) =>
+                                                              w.id ===
+                                                              dischargeWarehouseId,
+                                                          )?.name,
+                                                        weightPerBultoKg:
+                                                          item.weightPerBultoKg,
+                                                        volumePerBultoM3:
+                                                          item.volumePerBultoM3,
+                                                        date: generalEntryDate,
+                                                      })
+                                                    }
+                                                    className="px-2 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded text-[10px] flex-1 text-center"
+                                                  >
+                                                    Rótulo
+                                                  </button>
+
+                                                  {item.pallets.length > 1 && (
+                                                    <button
+                                                      onClick={() =>
+                                                        handleRemovePalletFromItem(
+                                                          realIdx,
+                                                          pIdx,
+                                                        )
+                                                      }
+                                                      className="px-2 py-2 bg-red-950 border border-red-800 text-red-400 hover:bg-red-900 rounded font-bold"
+                                                    >
+                                                      X
+                                                    </button>
+                                                  )}
+                                                </div>
+                                              </div>
+                                            );
+                                          },
+                                        )}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
 
                         <button
                           onClick={handleProcessInboundDischarge}
@@ -1333,6 +1621,7 @@ export default function InventoryPage() {
               </div>
             )}
 
+            {/* TAB: HISTORIAL CON BOTÓN HABILITADO PARA PRUEBAS */}
             {activeTab === 'HISTORIAL' && (
               <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
                 <h2 className="text-base font-bold text-amber-400 border-b border-slate-800 pb-2">
@@ -1386,16 +1675,14 @@ export default function InventoryPage() {
                             </span>
                           </td>
                           <td className="p-3">
-                            {c.status === 'PENDIENTE' && (
-                              <button
-                                onClick={() =>
-                                  handleDeleteContainer(c.id, c.containerNumber)
-                                }
-                                className="px-2.5 py-1 bg-red-950 border border-red-800 text-red-400 hover:bg-red-900 rounded text-[10px] font-bold"
-                              >
-                                Anular / Eliminar
-                              </button>
-                            )}
+                            <button
+                              onClick={() =>
+                                handleDeleteContainer(c.id, c.containerNumber)
+                              }
+                              className="px-2.5 py-1 bg-red-950 border border-red-800 text-red-400 hover:bg-red-900 rounded text-[10px] font-bold"
+                            >
+                              Anular / Eliminar
+                            </button>
                           </td>
                         </tr>
                       ))}
