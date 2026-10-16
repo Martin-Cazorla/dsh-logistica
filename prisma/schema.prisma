@@ -88,11 +88,12 @@ model User {
     isActive  Boolean  @default(true) @map("is_active")
 
     // Relaciones
-    assignedOrders   Order[]         @relation("PickerOrders")
-    salesOrders      Order[]         @relation("SellerOrders")
-    routes           Route[]         @relation("DriverRoutes")
-    movements        StockMovement[] @relation("UserMovements")
-    pickedOrderItems OrderItem[]     @relation("ItemPicker")
+    assignedOrders         Order[]                @relation("PickerOrders")
+    salesOrders            Order[]                @relation("SellerOrders")
+    routes                 Route[]                @relation("DriverRoutes")
+    movements              StockMovement[]        @relation("UserMovements")
+    pickedOrderItems       OrderItem[]            @relation("ItemPicker")
+    controlledInboundItems InboundContainerItem[] @relation("UserControlledItems")
 
     createdAt DateTime @default(now()) @map("created_at")
     updatedAt DateTime @updatedAt @map("updated_at")
@@ -261,9 +262,15 @@ model InboundContainerItem {
     imageUrl         String? @map("image_url") @db.VarChar(255)
     notes            String? @db.Text
 
-    container InboundContainer @relation(fields: [containerId], references: [id], onDelete: Cascade)
-    product   Product?         @relation(fields: [productId], references: [id])
-    location  Location?        @relation(fields: [locationId], references: [id])
+    // Trazabilidad de Auditoría
+    isControlled   Boolean   @default(false) @map("is_controlled")
+    controlledById String?   @map("controlled_by_id") @db.Uuid
+    controlledAt   DateTime? @map("controlled_at")
+
+    container    InboundContainer @relation(fields: [containerId], references: [id], onDelete: Cascade)
+    product      Product?         @relation(fields: [productId], references: [id])
+    location     Location?        @relation(fields: [locationId], references: [id])
+    controlledBy User?            @relation("UserControlledItems", fields: [controlledById], references: [id])
 
     createdAt DateTime @default(now()) @map("created_at")
     updatedAt DateTime @updatedAt @map("updated_at")

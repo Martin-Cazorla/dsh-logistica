@@ -76,6 +76,18 @@ export const inventoryService = {
     return fetcher(`/inventory/stock${queryStr}`);
   },
 
+  transferStock: async (payload: {
+    inventoryId: string;
+    targetLocationId: string;
+    quantityBultos: number;
+    userId?: string;
+  }) => {
+    return fetcher('/inventory/stock/transfer', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
   // PACKING LIST Y HISTORIAL CONTENEDORES
   createPackingList: async (data: ReceiveContainerDto) => {
     return fetcher('/inventory/inbound/packing-list', {

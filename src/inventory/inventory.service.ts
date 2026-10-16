@@ -1,4 +1,4 @@
-// src/inventory/inventory.service.ts
+// dsh-logistica/src/inventory/inventory.service.ts
 
 import {
   Injectable,
@@ -327,7 +327,7 @@ export class InventoryService {
     });
   }
 
-  // OBTENER HISTORIAL DE CONTENEDORES
+  // OBTENER HISTORIAL DE CONTENEDORES CON AUDITORÍA
   async getContainersHistory(status?: string) {
     const whereClause: any = {};
     if (status) whereClause.status = status as any;
@@ -336,7 +336,13 @@ export class InventoryService {
       where: whereClause,
       include: {
         warehouse: true,
-        items: true,
+        items: {
+          include: {
+            controlledBy: {
+              select: { firstName: true, lastName: true },
+            },
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -367,6 +373,11 @@ export class InventoryService {
         weightPerBultoKg: Number(i.weightPerBultoKg),
         volumePerBultoM3: Number(i.volumePerBultoM3),
         locationId: i.locationId,
+        isControlled: i.isControlled,
+        controlledBy: i.controlledBy
+          ? `${i.controlledBy.firstName} ${i.controlledBy.lastName}`
+          : null,
+        controlledAt: i.controlledAt,
       })),
     }));
   }
@@ -388,8 +399,12 @@ export class InventoryService {
   }
 
   // FASE 2: PROCESAR ESTIBADO MÓVIL
-  async processInbound(dto: { containerId: string; items: any[] }) {
-    const { containerId, items } = dto;
+  async processInbound(dto: {
+    containerId: string;
+    items: any[];
+    userId?: string;
+  }) {
+    const { containerId, items, userId } = dto;
 
     const container = await this.prisma.inboundContainer.findUnique({
       where: { id: containerId },
@@ -397,8 +412,11 @@ export class InventoryService {
 
     if (!container) throw new NotFoundException('Contenedor no encontrado.');
 
-    const defaultUser = await this.prisma.user.findFirst();
-    if (!defaultUser)
+    const activeUser = userId
+      ? await this.prisma.user.findUnique({ where: { id: userId } })
+      : await this.prisma.user.findFirst();
+
+    if (!activeUser)
       throw new BadRequestException('No hay usuarios en el sistema.');
 
     return this.prisma.$transaction(async (tx) => {
@@ -451,7 +469,7 @@ export class InventoryService {
           data: {
             productId: product.id,
             warehouseId: container.warehouseId,
-            userId: defaultUser.id,
+            userId: activeUser.id,
             type: 'INBOUND',
             quantity: item.quantityBultos,
             referenceCode: container.containerNumber,
@@ -471,6 +489,90 @@ export class InventoryService {
         success: true,
         message: 'Contenedor procesado e ingresado al stock correctamente.',
       };
+    });
+  }
+
+  // MOVER STOCK DE UNA UBICACIÓN A OTRA (REUBICACIÓN INTERNA DE PALLETS)
+  async transferStock(dto: {
+    inventoryId: string;
+    targetLocationId: string;
+    quantityBultos: number;
+    userId?: string;
+  }) {
+    const { inventoryId, targetLocationId, quantityBultos, userId } = dto;
+
+    const sourceInv = await this.prisma.inventory.findUnique({
+      where: { id: inventoryId },
+      include: { product: true },
+    });
+
+    if (!sourceInv)
+      throw new NotFoundException('Inventario de origen no encontrado.');
+    if (sourceInv.quantity < quantityBultos) {
+      throw new BadRequestException(
+        'La cantidad a mover supera el stock disponible en esta ubicación.',
+      );
+    }
+
+    const activeUser = userId
+      ? await this.prisma.user.findUnique({ where: { id: userId } })
+      : await this.prisma.user.findFirst();
+
+    if (!activeUser)
+      throw new BadRequestException('Usuario no válido en el sistema.');
+
+    return this.prisma.$transaction(async (tx) => {
+      // 1. Restar o eliminar stock de la ubicación origen
+      if (sourceInv.quantity === quantityBultos) {
+        await tx.inventory.delete({ where: { id: sourceInv.id } });
+      } else {
+        await tx.inventory.update({
+          where: { id: sourceInv.id },
+          data: { quantity: sourceInv.quantity - quantityBultos },
+        });
+      }
+
+      // 2. Incrementar o crear registro de stock en la ubicación destino
+      const targetInv = await tx.inventory.findFirst({
+        where: {
+          warehouseId: sourceInv.warehouseId,
+          productId: sourceInv.productId,
+          locationId: targetLocationId,
+        },
+      });
+
+      if (targetInv) {
+        await tx.inventory.update({
+          where: { id: targetInv.id },
+          data: { quantity: targetInv.quantity + quantityBultos },
+        });
+      } else {
+        await tx.inventory.create({
+          data: {
+            warehouseId: sourceInv.warehouseId,
+            productId: sourceInv.productId,
+            locationId: targetLocationId,
+            quantity: quantityBultos,
+            lotNumber: sourceInv.lotNumber,
+          },
+        });
+      }
+
+      // 3. Registrar el movimiento de stock en la auditoría
+      await tx.stockMovement.create({
+        data: {
+          productId: sourceInv.productId,
+          warehouseId: sourceInv.warehouseId,
+          sourceLocationId: sourceInv.locationId,
+          targetLocationId: targetLocationId,
+          userId: activeUser.id,
+          type: 'TRANSFER_IN',
+          quantity: quantityBultos,
+          referenceCode: sourceInv.lotNumber || 'REUBICACION_PALLET',
+        },
+      });
+
+      return { success: true, message: 'Stock reubicado correctamente.' };
     });
   }
 }

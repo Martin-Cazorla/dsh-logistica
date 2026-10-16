@@ -1,4 +1,4 @@
-// src/inventory/inventory.controller.ts
+// dsh-logistica/src/inventory/inventory.controller.ts
 
 import {
   Controller,
@@ -59,6 +59,20 @@ export class InventoryController {
     return this.inventoryService.getStockList(warehouseId, search);
   }
 
+  // REUBICACIÓN DE STOCK / TRANSFERENCIA DE PALLETS
+  @Post('stock/transfer')
+  transferStock(
+    @Body()
+    dto: {
+      inventoryId: string;
+      targetLocationId: string;
+      quantityBultos: number;
+      userId?: string;
+    },
+  ) {
+    return this.inventoryService.transferStock(dto);
+  }
+
   // PACKING LIST Y HISTORIAL DE CONTENEDORES
   @Post('inbound/packing-list')
   createPackingList(@Body() dto: InboundDto) {
@@ -76,7 +90,9 @@ export class InventoryController {
   }
 
   @Post('inbound/process')
-  processInbound(@Body() dto: { containerId: string; items: any[] }) {
+  processInbound(
+    @Body() dto: { containerId: string; items: any[]; userId?: string },
+  ) {
     return this.inventoryService.processInbound(dto);
   }
 }
