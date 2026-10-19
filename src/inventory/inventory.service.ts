@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { InboundDto, CreateWarehouseDto } from './dto/inbound.dto';
+import { CreateManualStockDto } from './dto/create-manual-stock.dto';
 
 interface InventoryReduceItem {
   quantity: number;
@@ -293,22 +294,22 @@ export class InventoryService {
     });
 
     return inventories.map((inv) => {
-      const weightKg = inv.product.weightKg ? Number(inv.product.weightKg) : 0;
-      const volumeM3 = inv.product.volumeM3 ? Number(inv.product.volumeM3) : 0;
+      const weightKg = inv.product?.weightKg ? Number(inv.product.weightKg) : 0;
+      const volumeM3 = inv.product?.volumeM3 ? Number(inv.product.volumeM3) : 0;
 
       return {
         id: inv.id,
         productId: inv.productId,
-        productSku: inv.product.sku,
-        productName: inv.product.name,
-        eanCode: inv.product.barcode || undefined,
+        productSku: inv.product?.sku || 'S/SKU',
+        productName: inv.product?.name || 'S/Nombre',
+        eanCode: inv.product?.barcode || undefined,
         containerNumber: inv.lotNumber || undefined,
         warehouseId: inv.warehouseId,
-        warehouseName: inv.warehouse.name,
+        warehouseName: inv.warehouse?.name || 'S/Depósito',
         locationId: inv.locationId,
         locationCode: inv.location ? inv.location.code : 'Sin Ubicación',
         quantityBultos: inv.quantity,
-        unitsPerBox: inv.product.unitsPerBox || 1,
+        unitsPerBox: inv.product?.unitsPerBox || 1,
         weightPerBultoKg: weightKg,
         volumePerBultoM3: volumeM3,
         totalWeightKg: inv.quantity * weightKg,
@@ -638,5 +639,130 @@ export class InventoryService {
 
       return { success: true, message: 'Stock reubicado correctamente.' };
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // CARGA MANUAL DE STOCK E INVENTARIO POR UBICACIÓN
+  // ---------------------------------------------------------------------------
+  async createManualStock(dto: CreateManualStockDto) {
+    const { warehouseId, locationId, items, userId } = dto;
+
+    let activeUser = null;
+    if (this.isValidUuid(userId)) {
+      activeUser = await this.prisma.user.findUnique({
+        where: { id: userId },
+      });
+    }
+    if (!activeUser) {
+      activeUser = await this.prisma.user.findFirst();
+    }
+
+    if (!activeUser) {
+      throw new BadRequestException('Usuario no válido en el sistema.');
+    }
+
+    return await this.prisma.$transaction(async (tx) => {
+      const results = [];
+
+      for (const item of items) {
+        // 1. Verificar/Crear el producto según SKU
+        let product = await tx.product.findUnique({
+          where: { sku: item.productSku },
+        });
+
+        if (!product) {
+          product = await tx.product.create({
+            data: {
+              sku: item.productSku,
+              name: item.productName,
+              unitsPerBox: item.unitsPerBox || 1,
+              weightKg: item.weightPerBultoKg || 10,
+              volumeM3: item.volumePerBultoM3 || 0.036,
+            },
+          });
+        }
+
+        // 2. Buscar si ya existe registro de este producto en la misma ubicación
+        const existingStock = await tx.inventory.findFirst({
+          where: {
+            warehouseId,
+            locationId,
+            productId: product.id,
+          },
+        });
+
+        let stockRecord;
+
+        if (existingStock) {
+          stockRecord = await tx.inventory.update({
+            where: { id: existingStock.id },
+            data: {
+              quantity: existingStock.quantity + item.quantityBultos,
+              updatedAt: new Date(),
+            },
+          });
+        } else {
+          stockRecord = await tx.inventory.create({
+            data: {
+              warehouseId,
+              locationId,
+              productId: product.id,
+              quantity: item.quantityBultos,
+              lotNumber: 'CARGA_MANUAL',
+            },
+          });
+        }
+
+        // 3. Registrar auditoría/movimiento de stock
+        await tx.stockMovement.create({
+          data: {
+            productId: product.id,
+            warehouseId,
+            targetLocationId: locationId,
+            userId: activeUser.id,
+            type: 'INBOUND',
+            quantity: item.quantityBultos,
+            referenceCode: 'CARGA_MANUAL_POSICION',
+          },
+        });
+
+        results.push(stockRecord);
+      }
+
+      return {
+        success: true,
+        message: 'Stock manual registrado e ingresado a la posición con éxito.',
+        records: results,
+      };
+    });
+  }
+
+  async getStockByLocation(locationId: string) {
+    const inventories = await this.prisma.inventory.findMany({
+      where: { locationId },
+      include: {
+        product: true,
+        warehouse: true,
+        location: true,
+      },
+    });
+
+    return inventories.map((inv) => ({
+      id: inv.id,
+      productId: inv.productId,
+      productSku: inv.product?.sku || 'S/SKU',
+      productName: inv.product?.name || 'S/Nombre',
+      quantityBultos: inv.quantity,
+      unitsPerBox: inv.product?.unitsPerBox || 1,
+      weightPerBultoKg: inv.product?.weightKg
+        ? Number(inv.product.weightKg)
+        : 0,
+      volumePerBultoM3: inv.product?.volumeM3
+        ? Number(inv.product.volumeM3)
+        : 0,
+      warehouseName: inv.warehouse?.name,
+      locationCode: inv.location?.code,
+      updatedAt: inv.updatedAt,
+    }));
   }
 }

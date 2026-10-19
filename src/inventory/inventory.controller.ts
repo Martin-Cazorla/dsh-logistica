@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { InventoryService } from './inventory.service';
 import { InboundDto, CreateWarehouseDto } from './dto/inbound.dto';
+import { CreateManualStockDto } from './dto/create-manual-stock.dto';
 
 @Controller('inventory')
 export class InventoryController {
@@ -114,5 +115,18 @@ export class InventoryController {
     @Body() dto: { containerId: string; items: any[]; userId?: string },
   ) {
     return this.inventoryService.processInbound(dto);
+  }
+
+  // ---------------------------------------------------------------------------
+  // CARGA MANUAL DE STOCK E INVENTARIO POR UBICACIÓN
+  // ---------------------------------------------------------------------------
+  @Post('manual-stock')
+  createManualStock(@Body() dto: CreateManualStockDto) {
+    return this.inventoryService.createManualStock(dto);
+  }
+
+  @Get('location-stock/:locationId')
+  getStockByLocation(@Param('locationId') locationId: string) {
+    return this.inventoryService.getStockByLocation(locationId);
   }
 }

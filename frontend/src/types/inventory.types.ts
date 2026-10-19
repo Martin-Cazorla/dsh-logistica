@@ -149,3 +149,39 @@ export interface PalletLabelData {
 }
 
 export type PalletTagData = PalletLabelData;
+
+// ---------------------------------------------------------------------------
+// TIPOS E INTERFACES PARA CARGA MANUAL / TOMA DE STOCK POR UBICACIÓN
+// ---------------------------------------------------------------------------
+
+export interface ManualStockItem {
+  productSku: string;
+  productName: string;
+  quantityBultos: number;
+  unitsPerBox?: number;
+  weightPerBultoKg?: number;
+  volumePerBultoM3?: number;
+  notes?: string;
+}
+
+export interface CreateManualStockDto {
+  warehouseId: string;
+  locationId: string;
+  entryDate?: string;
+  userId?: string;
+  items: ManualStockItem[];
+}
+
+export interface LocationStockDetail {
+  id: string;
+  productId: string;
+  productSku: string;
+  productName: string;
+  quantityBultos: number;
+  unitsPerBox: number;
+  weightPerBultoKg: number;
+  volumePerBultoM3: number;
+  warehouseName?: string;
+  locationCode?: string;
+  updatedAt: string;
+}

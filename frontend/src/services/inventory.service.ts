@@ -7,6 +7,8 @@ import {
   PhysicalLocation,
   CreateWarehouseDto,
   BatchLocationDto,
+  CreateManualStockDto,
+  LocationStockDetail,
 } from '@/types/inventory.types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
@@ -125,6 +127,22 @@ export const inventoryService = {
       containerId,
       items,
     });
+    return response.data;
+  },
+
+  // ---------------------------------------------------------------------------
+  // CARGA MANUAL DE STOCK E INVENTARIO POR UBICACIÓN
+  // ---------------------------------------------------------------------------
+
+  // Registrar toma / carga manual de stock directo por posición
+  async createManualStock(data: CreateManualStockDto) {
+    const response = await api.post('/inventory/manual-stock', data);
+    return response.data;
+  },
+
+  // Obtener el stock detallado alojado en una posición específica
+  async getStockByLocation(locationId: string): Promise<LocationStockDetail[]> {
+    const response = await api.get(`/inventory/location-stock/${locationId}`);
     return response.data;
   },
 };

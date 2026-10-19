@@ -2,7 +2,7 @@
 
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { inventoryService } from '@/services/inventory.service';
 import PalletLabelModal from '@/components/PalletLabelModal';
@@ -15,6 +15,51 @@ import {
   LocationTypeCategory,
   PalletLabelData,
 } from '@/types/inventory.types';
+
+// Interfaces locales para robustecer el tipado
+interface PhysicalControlPallet {
+  palletIndex: number;
+  quantityBultos: number;
+  locationId: string;
+}
+
+interface PhysicalControlItem {
+  id?: string;
+  sku: string;
+  description: string;
+  quantityBultos: number;
+  unitsPerBox: number;
+  lengthCm: number;
+  widthCm: number;
+  heightCm: number;
+  weightPerBultoKg: number;
+  volumePerBultoM3: number;
+  hasShowroomSample: boolean;
+  sampleUnitsCount: number;
+  isChecked: boolean;
+  controlledBy: string | null;
+  pallets: PhysicalControlPallet[];
+}
+
+interface ContainerHistoryItem {
+  id: string;
+  containerNumber: string;
+  warehouseId: string;
+  warehouseName: string;
+  arrivalDate: string;
+  dischargeDate?: string | null;
+  totalBultos: number;
+  status: 'PENDIENTE' | 'RECIBIDO' | 'ANULADO';
+  items: Array<{
+    id: string;
+    sku: string;
+    description: string;
+    quantityBultos: number;
+    isControlled: boolean;
+    controlledBy?: string | null;
+    controlledAt?: string | null;
+  }>;
+}
 
 export default function InventoryPage() {
   // ---------------------------------------------------------------------------
@@ -33,7 +78,9 @@ export default function InventoryPage() {
   >([]);
   const [stockList, setStockList] = useState<InventoryStock[]>([]);
   const [locations, setLocations] = useState<PhysicalLocation[]>([]);
-  const [containersHistory, setContainersHistory] = useState<any[]>([]);
+  const [containersHistory, setContainersHistory] = useState<
+    ContainerHistoryItem[]
+  >([]);
 
   // Estados de carga e interfaz (Feedback de UI)
   const [loading, setLoading] = useState<boolean>(true);
@@ -89,7 +136,9 @@ export default function InventoryPage() {
   const [generalEntryDate, setGeneralEntryDate] = useState<string>(
     new Date().toISOString().split('T')[0],
   );
-  const [physicalControlItems, setPhysicalControlItems] = useState<any[]>([]);
+  const [physicalControlItems, setPhysicalControlItems] = useState<
+    PhysicalControlItem[]
+  >([]);
 
   // Búsqueda rápida de ubicaciones dentro de ítems en Fase 2
   const [phase2LocationSearches, setPhase2LocationSearches] = useState<
@@ -118,9 +167,8 @@ export default function InventoryPage() {
   // ---------------------------------------------------------------------------
   const [historySearchQuery, setHistorySearchQuery] = useState<string>('');
   const [historyDateFilter, setHistoryDateFilter] = useState<string>('');
-  const [selectedContainerDetail, setSelectedContainerDetail] = useState<
-    any | null
-  >(null);
+  const [selectedContainerDetail, setSelectedContainerDetail] =
+    useState<ContainerHistoryItem | null>(null);
   const [historyPage, setHistoryPage] = useState<number>(1);
 
   // ---------------------------------------------------------------------------
@@ -174,6 +222,61 @@ export default function InventoryPage() {
   const ITEMS_PER_PAGE = 10;
 
   // ---------------------------------------------------------------------------
+  // FUNCIONES MEMOIZADAS DE CARGA DE DATOS (API)
+  // ---------------------------------------------------------------------------
+  const loadLocationsForWarehouse = useCallback(async (whId: string) => {
+    if (!whId) {
+      setLocations([]);
+      return;
+    }
+    try {
+      const locs = await inventoryService.getAvailableLocations(whId);
+      setLocations(locs);
+      setSelectedLocIdsForDelete([]);
+      setEditedCapacities({});
+    } catch (err) {
+      console.error('Error al cargar ubicaciones:', err);
+    }
+  }, []);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const [whData, whList, stData, contData] = await Promise.all([
+        inventoryService.getWarehouseOccupancy(),
+        inventoryService.getWarehousesList(),
+        inventoryService.getStockList(),
+        inventoryService.getContainersHistory(),
+      ]);
+      setWarehouses(whData);
+      setSimpleWarehousesList(whList);
+      setStockList(stData);
+      setContainersHistory(contData as ContainerHistoryItem[]);
+
+      if (whList.length > 0) {
+        setDischargeWarehouseId((prev) =>
+          !prev || !whList.some((w: { id: string }) => w.id === prev)
+            ? whList[0].id
+            : prev,
+        );
+        setTargetConfigWhId((prev) =>
+          !prev || !whList.some((w: { id: string }) => w.id === prev)
+            ? whList[0].id
+            : prev,
+        );
+      }
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } };
+      setErrorMsg(
+        error.response?.data?.message || 'Error de conexión con el servidor.',
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // ---------------------------------------------------------------------------
   // EFECTOS DE INICIALIZACIÓN Y WEBSOCKETS
   // ---------------------------------------------------------------------------
   useEffect(() => {
@@ -187,7 +290,7 @@ export default function InventoryPage() {
     return () => {
       newSocket.disconnect();
     };
-  }, []);
+  }, [loadData]);
 
   useEffect(() => {
     if (!socket) return;
@@ -246,7 +349,7 @@ export default function InventoryPage() {
     if (dischargeWarehouseId) {
       loadLocationsForWarehouse(dischargeWarehouseId);
     }
-  }, [dischargeWarehouseId]);
+  }, [dischargeWarehouseId, loadLocationsForWarehouse]);
 
   useEffect(() => {
     if (targetConfigWhId) {
@@ -254,7 +357,7 @@ export default function InventoryPage() {
       setSelectedAreaFilter('ALL');
       setEditedCapacities({});
     }
-  }, [targetConfigWhId]);
+  }, [targetConfigWhId, loadLocationsForWarehouse]);
 
   useEffect(() => {
     if (selectedPendingContainerId) {
@@ -273,20 +376,18 @@ export default function InventoryPage() {
         if (container.items) {
           const defaultLoc = locations[0]?.id || '';
           setPhysicalControlItems(
-            container.items.map((i: any) => {
-              const qtyBultos =
-                i.quantityBultos || i.quantityBultosExpected || 1;
+            container.items.map((i) => {
+              const qtyBultos = i.quantityBultos || 1;
               return {
-                ...i,
-                sku: i.sku || i.productSku || '',
-                description: i.description || i.productName || '',
+                sku: i.sku || '',
+                description: i.description || '',
                 quantityBultos: qtyBultos,
-                unitsPerBox: i.unitsPerBox || 1,
-                lengthCm: i.lengthCm || 40,
-                widthCm: i.widthCm || 30,
-                heightCm: i.heightCm || 30,
-                weightPerBultoKg: i.weightPerBultoKg || 10,
-                volumePerBultoM3: i.volumePerBultoM3 || 0.036,
+                unitsPerBox: 1,
+                lengthCm: 40,
+                widthCm: 30,
+                heightCm: 30,
+                weightPerBultoKg: 10,
+                volumePerBultoM3: 0.036,
                 hasShowroomSample: false,
                 sampleUnitsCount: 0,
                 isChecked: Boolean(i.isControlled),
@@ -313,6 +414,7 @@ export default function InventoryPage() {
     containersHistory,
     simpleWarehousesList,
     socket,
+    locations,
   ]);
 
   useEffect(() => {
@@ -321,7 +423,7 @@ export default function InventoryPage() {
       setPhysicalControlItems((prev) =>
         prev.map((item) => ({
           ...item,
-          pallets: (item.pallets || []).map((p: any) => ({
+          pallets: (item.pallets || []).map((p) => ({
             ...p,
             locationId: p.locationId || defaultLocId,
           })),
@@ -329,62 +431,6 @@ export default function InventoryPage() {
       );
     }
   }, [locations]);
-
-  // ---------------------------------------------------------------------------
-  // FUNCIONES DE CARGA DE DATOS API
-  // ---------------------------------------------------------------------------
-  const loadData = async () => {
-    setLoading(true);
-    setErrorMsg(null);
-    try {
-      const [whData, whList, stData, contData] = await Promise.all([
-        inventoryService.getWarehouseOccupancy(),
-        inventoryService.getWarehousesList(),
-        inventoryService.getStockList(),
-        inventoryService.getContainersHistory(),
-      ]);
-      setWarehouses(whData);
-      setSimpleWarehousesList(whList);
-      setStockList(stData);
-      setContainersHistory(contData as any[]);
-
-      if (whList.length > 0) {
-        if (
-          !dischargeWarehouseId ||
-          !whList.some((w: { id: string }) => w.id === dischargeWarehouseId)
-        ) {
-          setDischargeWarehouseId(whList[0].id);
-        }
-        if (
-          !targetConfigWhId ||
-          !whList.some((w: { id: string }) => w.id === targetConfigWhId)
-        ) {
-          setTargetConfigWhId(whList[0].id);
-        }
-      }
-    } catch (err: any) {
-      setErrorMsg(
-        err.response?.data?.message || 'Error de conexión con el servidor.',
-      );
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loadLocationsForWarehouse = async (whId: string) => {
-    if (!whId) {
-      setLocations([]);
-      return;
-    }
-    try {
-      const locs = await inventoryService.getAvailableLocations(whId);
-      setLocations(locs);
-      setSelectedLocIdsForDelete([]);
-      setEditedCapacities({});
-    } catch (err) {
-      console.error('Error al cargar ubicaciones:', err);
-    }
-  };
 
   // ---------------------------------------------------------------------------
   // PROPIEDADES COMPUTADAS (USEMEMO)
@@ -584,7 +630,7 @@ export default function InventoryPage() {
   const handleUpdatePackingItem = (
     index: number,
     field: keyof PackingListItem,
-    value: any,
+    value: unknown,
   ) => {
     setPackingList((prev) => {
       const updated = [...prev];
@@ -626,8 +672,8 @@ export default function InventoryPage() {
 
   const handleUpdatePhysicalItem = (
     itemIdx: number,
-    field: string,
-    value: any,
+    field: keyof PhysicalControlItem,
+    value: unknown,
   ) => {
     setPhysicalControlItems((prev) => {
       const updated = [...prev];
@@ -683,7 +729,7 @@ export default function InventoryPage() {
       const defaultLoc = locations[0]?.id || '';
 
       const allocatedBultos = currentPallets.reduce(
-        (acc: number, p: any) => acc + (Number(p.quantityBultos) || 0),
+        (acc: number, p) => acc + (Number(p.quantityBultos) || 0),
         0,
       );
       const remainingBultos = Math.max(
@@ -710,8 +756,8 @@ export default function InventoryPage() {
       const item = { ...updated[itemIdx] };
       if (item.pallets.length <= 1) return prev;
       item.pallets = item.pallets
-        .filter((_: any, pIdx: number) => pIdx !== palletIdx)
-        .map((p: any, idx: number) => ({ ...p, palletIndex: idx + 1 }));
+        .filter((_, pIdx) => pIdx !== palletIdx)
+        .map((p, idx) => ({ ...p, palletIndex: idx + 1 }));
       updated[itemIdx] = item;
       return updated;
     });
@@ -720,8 +766,8 @@ export default function InventoryPage() {
   const handleUpdatePalletItem = (
     itemIdx: number,
     palletIdx: number,
-    field: string,
-    value: any,
+    field: keyof PhysicalControlPallet,
+    value: unknown,
   ) => {
     setPhysicalControlItems((prev) => {
       const updated = [...prev];
@@ -748,8 +794,11 @@ export default function InventoryPage() {
       setSuccessMsg(`Depósito "${newWhName}" creado correctamente.`);
       setNewWhName('');
       await loadData();
-    } catch (err: any) {
-      setErrorMsg(err.response?.data?.message || 'Error al crear el depósito.');
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } };
+      setErrorMsg(
+        error.response?.data?.message || 'Error al crear el depósito.',
+      );
     } finally {
       setSubmitting(false);
     }
@@ -836,8 +885,11 @@ export default function InventoryPage() {
       ]);
 
       await loadData();
-    } catch (err: any) {
-      const backendMessage = err.response?.data?.message;
+    } catch (err: unknown) {
+      const error = err as {
+        response?: { data?: { message?: string | string[] } };
+      };
+      const backendMessage = error.response?.data?.message;
       if (Array.isArray(backendMessage)) {
         setErrorMsg(backendMessage.join(' | '));
       } else {
@@ -866,13 +918,24 @@ export default function InventoryPage() {
     );
     if (!selectedCont) return;
 
-    const itemsToSubmit: any[] = [];
+    const itemsToSubmit: Array<{
+      sku: string;
+      description: string;
+      quantityBultos: number;
+      unitsPerBox: number;
+      weightPerBultoKg: number;
+      volumePerBultoM3: number;
+      sampleUnits: number;
+      entryDate: string;
+      locationId: string;
+      warehouseId: string;
+    }> = [];
     const defaultLocId = locations[0]?.id;
 
     for (const item of physicalControlItems) {
       const pallets = item.pallets || [];
       const sumPalletBultos = pallets.reduce(
-        (acc: number, p: any) => acc + (Number(p.quantityBultos) || 0),
+        (acc: number, p) => acc + (Number(p.quantityBultos) || 0),
         0,
       );
 
@@ -921,9 +984,10 @@ export default function InventoryPage() {
       );
       setSelectedPendingContainerId('');
       await loadData();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } };
       setErrorMsg(
-        err.response?.data?.message ||
+        error.response?.data?.message ||
           'Error al procesar la descarga del contenedor.',
       );
     } finally {
@@ -938,9 +1002,10 @@ export default function InventoryPage() {
       await inventoryService.deleteContainer(id);
       setSuccessMsg(`Contenedor "${num}" eliminado de la base.`);
       await loadData();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } };
       setErrorMsg(
-        err.response?.data?.message || 'Error al eliminar el contenedor.',
+        error.response?.data?.message || 'Error al eliminar el contenedor.',
       );
     } finally {
       setSubmitting(false);
@@ -988,9 +1053,10 @@ export default function InventoryPage() {
       setRelocateTargetLocId('');
       setRelocateSearchLocQuery('');
       await loadData();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } };
       setErrorMsg(
-        err.response?.data?.message || 'Error al reubicar el pallet.',
+        error.response?.data?.message || 'Error al reubicar el pallet.',
       );
     } finally {
       setSubmitting(false);
@@ -1017,8 +1083,9 @@ export default function InventoryPage() {
       });
       setSuccessMsg('Ubicaciones generadas exitosamente.');
       await loadData();
-    } catch (err: any) {
-      setErrorMsg(err.response?.data?.message || 'Error al generar el lote.');
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } };
+      setErrorMsg(error.response?.data?.message || 'Error al generar el lote.');
     } finally {
       setSubmitting(false);
     }
@@ -1058,9 +1125,10 @@ export default function InventoryPage() {
       setEditedCapacities({});
       await loadLocationsForWarehouse(targetConfigWhId);
       await loadData();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } };
       setErrorMsg(
-        err.response?.data?.message || 'Error al actualizar capacidades.',
+        error.response?.data?.message || 'Error al actualizar capacidades.',
       );
     } finally {
       setSubmitting(false);
@@ -1082,9 +1150,10 @@ export default function InventoryPage() {
       setSuccessMsg('Ubicaciones eliminadas en lote.');
       setSelectedLocIdsForDelete([]);
       await loadData();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } };
       setErrorMsg(
-        err.response?.data?.message || 'Error al eliminar posiciones.',
+        error.response?.data?.message || 'Error al eliminar posiciones.',
       );
     } finally {
       setSubmitting(false);
@@ -1106,9 +1175,10 @@ export default function InventoryPage() {
       await inventoryService.deleteWarehouse(targetConfigWhId);
       setSuccessMsg(`Depósito "${wh?.name}" eliminado completamente.`);
       await loadData();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } };
       setErrorMsg(
-        err.response?.data?.message ||
+        error.response?.data?.message ||
           'No se puede eliminar un depósito con stock activo.',
       );
     } finally {
@@ -1259,10 +1329,11 @@ export default function InventoryPage() {
                       );
 
                       return (
-                        <div
+                        <button
+                          type="button"
                           key={wh.id}
-                          className="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-xl flex flex-col justify-between hover:border-amber-500/50 transition-all cursor-pointer"
                           onClick={() => setSelectedMallaWarehouseId(wh.id)}
+                          className="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-xl flex flex-col justify-between hover:border-amber-500/50 transition-all cursor-pointer text-left w-full"
                         >
                           <div>
                             <div className="flex justify-between items-start mb-4">
@@ -1311,14 +1382,11 @@ export default function InventoryPage() {
                             </div>
                           </div>
 
-                          <button
-                            type="button"
-                            className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold rounded-xl text-xs mt-2 transition-colors flex items-center justify-center gap-2"
-                          >
+                          <div className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold rounded-xl text-xs mt-2 transition-colors flex items-center justify-center gap-2">
                             <span>Ver Mapa de Posiciones</span>
                             <span aria-hidden="true">→</span>
-                          </button>
-                        </div>
+                          </div>
+                        </button>
                       );
                     })}
                   </div>
@@ -1719,9 +1787,10 @@ export default function InventoryPage() {
                                       : 'border-slate-800'
                                 }`}
                               >
-                                <div
+                                <button
+                                  type="button"
                                   onClick={() => toggleItemAccordion(item.sku)}
-                                  className="p-3.5 flex justify-between items-center cursor-pointer select-none"
+                                  className="w-full text-left p-3.5 flex justify-between items-center select-none"
                                 >
                                   <div>
                                     <h3 className="font-black text-white text-sm">
@@ -1765,7 +1834,7 @@ export default function InventoryPage() {
                                       {isExpanded ? '▲ Ocultar' : '▼ Editar'}
                                     </span>
                                   </div>
-                                </div>
+                                </button>
 
                                 {/* DESPLEGABLE DE EDICIÓN Y PALLETS */}
                                 {isExpanded && !isLockedByOther && (
@@ -1915,7 +1984,7 @@ export default function InventoryPage() {
                                       </div>
 
                                       {(item.pallets || []).map(
-                                        (pallet: any, pIdx: number) => {
+                                        (pallet, pIdx) => {
                                           const keySearch = `${item.sku}_${pIdx}`;
                                           const locSearchQuery = (
                                             phase2LocationSearches[keySearch] ||
@@ -2179,12 +2248,15 @@ export default function InventoryPage() {
                     <tbody className="divide-y divide-slate-800">
                       {paginatedHistoryContainers.map((c) => (
                         <tr key={c.id} className="hover:bg-slate-950/50">
-                          <td
-                            className="p-3 font-mono font-bold text-amber-400 cursor-pointer hover:underline"
-                            onClick={() => setSelectedContainerDetail(c)}
-                          >
-                            {c.containerNumber}{' '}
-                            <span aria-hidden="true">🔍</span>
+                          <td className="p-3">
+                            <button
+                              type="button"
+                              className="font-mono font-bold text-amber-400 hover:underline text-left"
+                              onClick={() => setSelectedContainerDetail(c)}
+                            >
+                              {c.containerNumber}{' '}
+                              <span aria-hidden="true">🔍</span>
+                            </button>
                           </td>
                           <td className="p-3 font-bold text-white">
                             {c.warehouseName}
@@ -2733,20 +2805,21 @@ export default function InventoryPage() {
                                     : 'bg-slate-950 border-slate-800'
                               }`}
                             >
-                              <div
-                                onClick={() =>
-                                  setSelectedLocIdsForDelete((prev) =>
-                                    prev.includes(loc.id)
-                                      ? prev.filter((id) => id !== loc.id)
-                                      : [...prev, loc.id],
-                                  )
-                                }
+                              <label
+                                htmlFor={`select-loc-checkbox-${loc.id}`}
                                 className="flex items-center gap-3 cursor-pointer flex-1"
                               >
                                 <input
+                                  id={`select-loc-checkbox-${loc.id}`}
                                   type="checkbox"
                                   checked={isSelected}
-                                  onChange={() => {}}
+                                  onChange={() => {
+                                    setSelectedLocIdsForDelete((prev) =>
+                                      prev.includes(loc.id)
+                                        ? prev.filter((id) => id !== loc.id)
+                                        : [...prev, loc.id],
+                                    );
+                                  }}
                                   aria-label={`Seleccionar ubicación ${loc.code}`}
                                   className="accent-red-500 w-4 h-4"
                                 />
@@ -2758,7 +2831,7 @@ export default function InventoryPage() {
                                     {loc.zoneName}
                                   </span>
                                 </div>
-                              </div>
+                              </label>
 
                               <div className="flex items-center gap-2">
                                 <label
@@ -2904,7 +2977,7 @@ export default function InventoryPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800">
-                    {selectedContainerDetail.items.map((item: any) => (
+                    {selectedContainerDetail.items.map((item) => (
                       <tr key={item.id}>
                         <td className="p-2.5 font-mono text-amber-400 font-bold">
                           {item.sku}
@@ -2917,9 +2990,11 @@ export default function InventoryPage() {
                           {item.isControlled ? (
                             <span className="text-emerald-400 font-bold bg-emerald-950/60 border border-emerald-800 px-2 py-0.5 rounded text-[11px]">
                               ✓ {item.controlledBy || 'Operario'} (
-                              {new Date(item.controlledAt).toLocaleDateString(
-                                'es-AR',
-                              )}
+                              {item.controlledAt
+                                ? new Date(
+                                    item.controlledAt,
+                                  ).toLocaleDateString('es-AR')
+                                : '-'}
                               )
                             </span>
                           ) : (
