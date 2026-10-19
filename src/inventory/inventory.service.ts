@@ -44,7 +44,7 @@ export class InventoryService {
       let usedCapacityM3 = 0;
 
       const mappedLocations = wh.locations.map((loc) => {
-        const locMaxM3 = loc.capacity || 10;
+        const locMaxM3 = loc.capacity ? Number(loc.capacity) : 10;
         totalCapacityM3 += locMaxM3;
 
         const locUsedM3 = loc.inventories.reduce(
@@ -179,7 +179,7 @@ export class InventoryService {
         zoneName: loc.aisle || loc.notes || 'Zona General',
         rackLevel: loc.rack || 'A',
         moduleNumber: loc.position ? parseInt(loc.position, 10) || 1 : 1,
-        maxCapacityM3: loc.capacity || 10,
+        maxCapacityM3: loc.capacity ? Number(loc.capacity) : 10,
         usedCapacityM3: 0,
         occupancyPercentage: 0,
         status: 'DISPONIBLE',
@@ -195,7 +195,7 @@ export class InventoryService {
     levels: string[];
     positionStart: number;
     positionEnd: number;
-    maxCapacityM3PerUnit: number;
+    maxCapacityM3PerUnit: number | string;
   }) {
     const {
       warehouseId,
@@ -210,7 +210,13 @@ export class InventoryService {
     const cleanArea = (areaName || 'GENERAL')
       .replace(/\s+/g, '-')
       .toUpperCase();
-    const capacityVal = Math.round(Number(maxCapacityM3PerUnit)) || 2;
+
+    const parsedCap =
+      typeof maxCapacityM3PerUnit === 'string'
+        ? parseFloat(maxCapacityM3PerUnit.replace(',', '.'))
+        : Number(maxCapacityM3PerUnit);
+
+    const capacityVal = !isNaN(parsedCap) && parsedCap > 0 ? parsedCap : 2.5;
 
     for (const level of levels) {
       for (let pos = Number(positionStart); pos <= Number(positionEnd); pos++) {
@@ -231,6 +237,19 @@ export class InventoryService {
       data: locationsToCreate,
       skipDuplicates: true,
     });
+  }
+
+  async updateLocationsCapacity(
+    updates: Array<{ id: string; capacity: number }>,
+  ) {
+    return this.prisma.$transaction(
+      updates.map((u) =>
+        this.prisma.location.update({
+          where: { id: u.id },
+          data: { capacity: u.capacity },
+        }),
+      ),
+    );
   }
 
   async deleteLocationsBatch(locationIds: string[]) {
@@ -437,9 +456,11 @@ export class InventoryService {
           });
         }
 
+        const effectiveWarehouseId = item.warehouseId || container.warehouseId;
+
         const existingInv = await tx.inventory.findFirst({
           where: {
-            warehouseId: container.warehouseId,
+            warehouseId: effectiveWarehouseId,
             productId: product.id,
             locationId: item.locationId,
           },
@@ -456,7 +477,7 @@ export class InventoryService {
         } else {
           await tx.inventory.create({
             data: {
-              warehouseId: container.warehouseId,
+              warehouseId: effectiveWarehouseId,
               productId: product.id,
               locationId: item.locationId,
               quantity: item.quantityBultos,
@@ -468,7 +489,7 @@ export class InventoryService {
         await tx.stockMovement.create({
           data: {
             productId: product.id,
-            warehouseId: container.warehouseId,
+            warehouseId: effectiveWarehouseId,
             userId: activeUser.id,
             type: 'INBOUND',
             quantity: item.quantityBultos,
@@ -492,14 +513,21 @@ export class InventoryService {
     });
   }
 
-  // MOVER STOCK DE UNA UBICACIÓN A OTRA (REUBICACIÓN INTERNA DE PALLETS)
+  // MOVER STOCK DE UNA UBICACIÓN/DEPÓSITO A OTRO
   async transferStock(dto: {
     inventoryId: string;
     targetLocationId: string;
+    targetWarehouseId?: string;
     quantityBultos: number;
     userId?: string;
   }) {
-    const { inventoryId, targetLocationId, quantityBultos, userId } = dto;
+    const {
+      inventoryId,
+      targetLocationId,
+      targetWarehouseId,
+      quantityBultos,
+      userId,
+    } = dto;
 
     const sourceInv = await this.prisma.inventory.findUnique({
       where: { id: inventoryId },
@@ -514,6 +542,16 @@ export class InventoryService {
       );
     }
 
+    const targetLocation = await this.prisma.location.findUnique({
+      where: { id: targetLocationId },
+    });
+
+    if (!targetLocation)
+      throw new NotFoundException('Ubicación destino no encontrada.');
+
+    const destinationWarehouseId =
+      targetWarehouseId || targetLocation.warehouseId;
+
     const activeUser = userId
       ? await this.prisma.user.findUnique({ where: { id: userId } })
       : await this.prisma.user.findFirst();
@@ -522,7 +560,7 @@ export class InventoryService {
       throw new BadRequestException('Usuario no válido en el sistema.');
 
     return this.prisma.$transaction(async (tx) => {
-      // 1. Restar o eliminar stock de la ubicación origen
+      // 1. Restar o eliminar stock del origen
       if (sourceInv.quantity === quantityBultos) {
         await tx.inventory.delete({ where: { id: sourceInv.id } });
       } else {
@@ -532,10 +570,10 @@ export class InventoryService {
         });
       }
 
-      // 2. Incrementar o crear registro de stock en la ubicación destino
+      // 2. Incrementar o crear registro en el destino
       const targetInv = await tx.inventory.findFirst({
         where: {
-          warehouseId: sourceInv.warehouseId,
+          warehouseId: destinationWarehouseId,
           productId: sourceInv.productId,
           locationId: targetLocationId,
         },
@@ -549,7 +587,7 @@ export class InventoryService {
       } else {
         await tx.inventory.create({
           data: {
-            warehouseId: sourceInv.warehouseId,
+            warehouseId: destinationWarehouseId,
             productId: sourceInv.productId,
             locationId: targetLocationId,
             quantity: quantityBultos,
@@ -558,11 +596,11 @@ export class InventoryService {
         });
       }
 
-      // 3. Registrar el movimiento de stock en la auditoría
+      // 3. Registrar el movimiento
       await tx.stockMovement.create({
         data: {
           productId: sourceInv.productId,
-          warehouseId: sourceInv.warehouseId,
+          warehouseId: destinationWarehouseId,
           sourceLocationId: sourceInv.locationId,
           targetLocationId: targetLocationId,
           userId: activeUser.id,

@@ -94,7 +94,7 @@ export default function InventoryPage() {
   >({});
   const [socket, setSocket] = useState<Socket | null>(null);
 
-  // Usuario simulado
+  // Usuario activo
   const [currentUser] = useState({
     id: 'usr-operario-1',
     name: 'Martín Cazorla',
@@ -287,7 +287,7 @@ export default function InventoryPage() {
     socket,
   ]);
 
-  // Actualizar los pallets de los ítems con la primera ubicación por defecto cuando cargan las ubicaciones del nuevo depósito
+  // Actualizar pallets con la primera ubicación disponible al cambiar de depósito
   useEffect(() => {
     if (locations.length > 0 && physicalControlItems.length > 0) {
       const defaultLocId = locations[0].id;
@@ -984,7 +984,6 @@ export default function InventoryPage() {
     }
   };
 
-  // BOTÓN "SELECCIONAR / DESMARCAR TODO" EN MANTENIMIENTO MASIVO
   const handleToggleSelectAllLocations = () => {
     const allVisibleIds = visibleLocationsInMaintenance.map((l) => l.id);
     const areAllSelected =
@@ -1605,7 +1604,7 @@ export default function InventoryPage() {
                                   </div>
                                 </div>
 
-                                {/* BLOQUE COMPLETO RESTAURADO: UNIDADES, MEDIDAS, PESO, MUESTRAS Y PALLETS */}
+                                {/* BLOQUE RESTAURADO: UNIDADES, MEDIDAS, PESO, MUESTRAS Y PALLETS */}
                                 {isExpanded && !isLockedByOther && (
                                   <div className="p-4 border-t border-slate-800 space-y-4 text-xs bg-slate-900/40 rounded-b-xl">
                                     <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 bg-slate-900 p-3 rounded-lg border border-slate-800">
@@ -1723,7 +1722,7 @@ export default function InventoryPage() {
                                       </div>
                                     </div>
 
-                                    {/* GESTIÓN Y ASIGNACIÓN DE POSICIONES CON BUSCADOR ESCRIBIBLE */}
+                                    {/* GESTIÓN Y ASIGNACIÓN DE POSICIONES */}
                                     <div className="space-y-2">
                                       <div className="flex justify-between items-center">
                                         <span className="font-bold text-slate-300 text-xs">
@@ -1909,7 +1908,7 @@ export default function InventoryPage() {
                         <button
                           onClick={handleProcessInboundDischarge}
                           disabled={submitting}
-                          className="w-full py-3.5 bg-amber-500 text-slate-950 font-black rounded-xl text-xs shadow-lg"
+                          className="w-full py-3.5 bg-amber-500 text-slate-950 font-black rounded-xl text-xs shadow-lg hover:bg-amber-400 transition-colors"
                         >
                           CONFIRMAR DESCARGA E INGRESO AL STOCK
                         </button>
@@ -2065,7 +2064,7 @@ export default function InventoryPage() {
               </div>
             )}
 
-            {/* TAB: STOCK & RÓTULOS (SELECCIÓN DE ORIGEN Y REUBICACIÓN) */}
+            {/* TAB: STOCK & RÓTULOS */}
             {activeTab === 'STOCK' && (
               <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
                 <div className="flex flex-wrap justify-between items-center gap-3 border-b border-slate-800 pb-3">
@@ -2220,7 +2219,7 @@ export default function InventoryPage() {
               </div>
             )}
 
-            {/* TAB: CONFIGURACIÓN CON BOTÓN SELECCIONAR TODO Y EDICIÓN DE METROS CÚBICOS */}
+            {/* TAB: CONFIGURACIÓN Y MANTENIMIENTO MASIVO */}
             {activeTab === 'CONFIG' && (
               <div className="space-y-6">
                 <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
@@ -2363,7 +2362,6 @@ export default function InventoryPage() {
                     </button>
                   </div>
 
-                  {/* MANTENIMIENTO MASIVO DE UBICACIONES Y CAPACIDAD EN METROS CÚBICOS */}
                   <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4 flex flex-col justify-between">
                     <div className="space-y-4">
                       <div className="flex justify-between items-center border-b border-slate-800 pb-2">
@@ -2427,7 +2425,6 @@ export default function InventoryPage() {
                         </div>
                       </div>
 
-                      {/* BOTÓN SELECCIONAR / DESMARCAR TODO RESTAURADO Y EDICIÓN DE METROS CÚBICOS */}
                       <div className="flex justify-between items-center text-xs pt-2 border-t border-slate-800">
                         <button
                           onClick={handleToggleSelectAllLocations}
@@ -2485,7 +2482,6 @@ export default function InventoryPage() {
                                 </div>
                               </div>
 
-                              {/* EDICIÓN DIRECTA DE METROS CÚBICOS (CAPACIDAD POR UBICACIÓN) */}
                               <div className="flex items-center gap-2">
                                 <span className="text-[10px] text-slate-400 font-bold">
                                   Capacidad m³:
@@ -2623,7 +2619,7 @@ export default function InventoryPage() {
           </div>
         )}
 
-        {/* MODAL MUDANZA / REUBICACIÓN DE PALLETS CON BUSCADOR ESCRIBIBLE */}
+        {/* MODAL MUDANZA / REUBICACIÓN DE PALLETS */}
         {relocateItem && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 space-y-4">
@@ -2641,7 +2637,6 @@ export default function InventoryPage() {
               </div>
 
               <div className="space-y-3 text-xs">
-                {/* SELECCIÓN DE UBICACIÓN ORIGEN SI ESTÁ EN MÁS DE UN LUGAR */}
                 <div>
                   <label className="block text-slate-300 mb-1">
                     1. Seleccionar Posición Origen *
@@ -2684,7 +2679,6 @@ export default function InventoryPage() {
                   />
                 </div>
 
-                {/* BUSCADOR ESCRIBIBLE DE POSICIÓN DESTINO */}
                 <div>
                   <label className="block text-slate-300 mb-1">
                     3. Buscar y Seleccionar Posición Destino *

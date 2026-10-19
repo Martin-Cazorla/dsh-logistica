@@ -4,6 +4,7 @@ import {
   Controller,
   Get,
   Post,
+  Put,
   Delete,
   Body,
   Param,
@@ -46,6 +47,13 @@ export class InventoryController {
     return this.inventoryService.generateLocationsBatch(dto);
   }
 
+  @Put('locations/capacity')
+  updateLocationsCapacity(
+    @Body() dto: { updates: Array<{ id: string; capacity: number }> },
+  ) {
+    return this.inventoryService.updateLocationsCapacity(dto.updates);
+  }
+
   @Delete('locations/batch')
   deleteBatchLocations(@Body('locationIds') locationIds: string[]) {
     return this.inventoryService.deleteLocationsBatch(locationIds);
@@ -66,6 +74,7 @@ export class InventoryController {
     dto: {
       inventoryId: string;
       targetLocationId: string;
+      targetWarehouseId?: string;
       quantityBultos: number;
       userId?: string;
     },
