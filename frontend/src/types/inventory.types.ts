@@ -116,6 +116,9 @@ export interface GenerateBatchLocationsDto {
   maxCapacityM3PerUnit: number;
 }
 
+// Alias para mantener compatibilidad con el servicio de inventario
+export type BatchLocationDto = GenerateBatchLocationsDto;
+
 export interface MoveStockDto {
   inventoryStockId: string;
   targetLocationId: string;

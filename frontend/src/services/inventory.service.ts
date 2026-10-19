@@ -1,117 +1,130 @@
 // frontend/src/services/inventory.service.ts
 
+import axios from 'axios';
 import {
   WarehouseOccupancy,
   InventoryStock,
   PhysicalLocation,
   CreateWarehouseDto,
-  GenerateBatchLocationsDto,
-  ReceiveContainerDto,
+  BatchLocationDto,
 } from '@/types/inventory.types';
 
-const API_BASE_URL = 'http://localhost:3001/api';
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
 
-async function fetcher<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${endpoint}`, {
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
-    ...options,
-  });
-  if (!res.ok) {
-    const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.message || `Error en la petición ${res.status}`);
-  }
-  return res.json();
-}
+const api = axios.create({
+  baseURL: API_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
 
 export const inventoryService = {
-  getWarehouseOccupancy: async (): Promise<WarehouseOccupancy[]> => {
-    return fetcher('/inventory/occupancy');
+  // Obtener resumen de ocupación de depósitos
+  async getWarehouseOccupancy(): Promise<WarehouseOccupancy[]> {
+    const response = await api.get('/inventory/occupancy');
+    return response.data;
   },
 
-  getWarehousesList: async (): Promise<{ id: string; name: string }[]> => {
-    return fetcher('/inventory/warehouses');
+  // Obtener lista simple de depósitos
+  async getWarehousesList(): Promise<{ id: string; name: string }[]> {
+    const response = await api.get('/inventory/warehouses');
+    return response.data;
   },
 
-  createWarehouse: async (data: CreateWarehouseDto) => {
-    return fetcher('/inventory/warehouse', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+  // Crear un nuevo depósito
+  async createWarehouse(data: CreateWarehouseDto) {
+    const response = await api.post('/inventory/warehouse', data);
+    return response.data;
   },
 
-  deleteWarehouse: async (id: string) => {
-    return fetcher(`/inventory/warehouse/${id}`, {
-      method: 'DELETE',
-    });
+  // Eliminar un depósito por ID
+  async deleteWarehouse(warehouseId: string) {
+    const response = await api.delete(`/inventory/warehouse/${warehouseId}`);
+    return response.data;
   },
 
-  getAvailableLocations: async (
+  // Obtener ubicaciones disponibles de un depósito
+  async getAvailableLocations(
     warehouseId: string,
-  ): Promise<PhysicalLocation[]> => {
-    return fetcher(`/inventory/locations/${warehouseId}`);
+  ): Promise<PhysicalLocation[]> {
+    const response = await api.get(`/inventory/locations/${warehouseId}`);
+    return response.data;
   },
 
-  generateBatchLocations: async (data: GenerateBatchLocationsDto) => {
-    return fetcher('/inventory/locations/batch', {
-      method: 'POST',
-      body: JSON.stringify(data),
+  // Generar ubicaciones en lote
+  async generateBatchLocations(data: BatchLocationDto) {
+    const response = await api.post('/inventory/locations/batch', data);
+    return response.data;
+  },
+
+  // Actualizar capacidad de ubicaciones masivamente
+  async updateLocationsCapacity(
+    updates: Array<{ id: string; capacity: number }>,
+  ) {
+    const response = await api.put('/inventory/locations/capacity', {
+      updates,
     });
+    return response.data;
   },
 
-  deleteLocationsBatch: async (locationIds: string[]) => {
-    return fetcher('/inventory/locations/batch', {
-      method: 'DELETE',
-      body: JSON.stringify({ locationIds }),
+  // Eliminar ubicaciones en lote
+  async deleteLocationsBatch(locationIds: string[]) {
+    const response = await api.delete('/inventory/locations/batch', {
+      data: { locationIds },
     });
+    return response.data;
   },
 
-  getStockList: async (
+  // Obtener lista consolidada de stock
+  async getStockList(
     warehouseId?: string,
     search?: string,
-  ): Promise<InventoryStock[]> => {
-    const params = new URLSearchParams();
-    if (warehouseId) params.append('warehouseId', warehouseId);
-    if (search) params.append('search', search);
-    const queryStr = params.toString() ? `?${params.toString()}` : '';
-    return fetcher(`/inventory/stock${queryStr}`);
+  ): Promise<InventoryStock[]> {
+    const response = await api.get('/inventory/stock', {
+      params: { warehouseId, search },
+    });
+    return response.data;
   },
 
-  transferStock: async (payload: {
+  // Transferir/Reubicar stock entre posiciones
+  async transferStock(data: {
     inventoryId: string;
     targetLocationId: string;
-    targetWarehouseId?: string;
     quantityBultos: number;
     userId?: string;
-  }) => {
-    return fetcher('/inventory/stock/transfer', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
+  }) {
+    const response = await api.post('/inventory/stock/transfer', data);
+    return response.data;
   },
 
-  // PACKING LIST Y HISTORIAL CONTENEDORES
-  createPackingList: async (data: ReceiveContainerDto) => {
-    return fetcher('/inventory/inbound/packing-list', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+  // Pre-cargar Packing List (Fase 1)
+  async createPackingList(data: any) {
+    const response = await api.post('/inventory/inbound/packing-list', data);
+    return response.data;
   },
 
-  getContainersHistory: async (status?: string) => {
-    const queryStr = status ? `?status=${status}` : '';
-    return fetcher(`/inventory/inbound/containers${queryStr}`);
+  // Obtener historial de contenedores
+  async getContainersHistory(status?: string) {
+    const response = await api.get('/inventory/inbound/containers', {
+      params: { status },
+    });
+    return response.data;
   },
 
-  deleteContainer: async (containerId: string) => {
-    return fetcher(`/inventory/inbound/container/${containerId}`, {
-      method: 'DELETE',
-    });
+  // Eliminar un contenedor
+  async deleteContainer(containerId: string) {
+    const response = await api.delete(
+      `/inventory/inbound/container/${containerId}`,
+    );
+    return response.data;
   },
 
-  processInbound: async (containerId: string, items: any[]) => {
-    return fetcher('/inventory/inbound/process', {
-      method: 'POST',
-      body: JSON.stringify({ containerId, items }),
+  // Procesar descarga e ingreso al stock (Fase 2)
+  async processInbound(containerId: string, items: any[]) {
+    const response = await api.post('/inventory/inbound/process', {
+      containerId,
+      items,
     });
+    return response.data;
   },
 };

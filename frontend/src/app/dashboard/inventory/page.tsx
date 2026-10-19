@@ -161,11 +161,14 @@ export default function InventoryPage() {
   const [genLevelsInput, setGenLevelsInput] = useState<string>('A, B, C');
   const [genPosStart, setGenPosStart] = useState<number>(1);
   const [genPosEnd, setGenPosEnd] = useState<number>(84);
-  const [genCapacityM3, setGenCapacityM3] = useState<number>(2.5);
+  const [genCapacityM3, setGenCapacityM3] = useState<number>(1.8);
 
   const [selectedLocIdsForDelete, setSelectedLocIdsForDelete] = useState<
     string[]
   >([]);
+  const [editedCapacities, setEditedCapacities] = useState<
+    Record<string, number>
+  >({});
   const [submitting, setSubmitting] = useState<boolean>(false);
 
   const ITEMS_PER_PAGE = 10;
@@ -249,6 +252,7 @@ export default function InventoryPage() {
     if (targetConfigWhId) {
       loadLocationsForWarehouse(targetConfigWhId);
       setSelectedAreaFilter('ALL');
+      setEditedCapacities({});
     }
   }, [targetConfigWhId]);
 
@@ -376,6 +380,7 @@ export default function InventoryPage() {
       const locs = await inventoryService.getAvailableLocations(whId);
       setLocations(locs);
       setSelectedLocIdsForDelete([]);
+      setEditedCapacities({});
     } catch (err) {
       console.error('Error al cargar ubicaciones:', err);
     }
@@ -970,7 +975,6 @@ export default function InventoryPage() {
       await inventoryService.transferStock({
         inventoryId: selectedSourceInventoryId,
         targetLocationId: relocateTargetLocId,
-        targetWarehouseId: relocateTargetWarehouseId || source.warehouseId,
         quantityBultos: relocateQuantity,
         userId: currentUser.id,
       });
@@ -1009,7 +1013,7 @@ export default function InventoryPage() {
         levels,
         positionStart: Number(genPosStart),
         positionEnd: Number(genPosEnd),
-        maxCapacityM3PerUnit: Number(genCapacityM3) || 2,
+        maxCapacityM3PerUnit: Number(genCapacityM3) || 1.8,
       });
       setSuccessMsg('Ubicaciones generadas exitosamente.');
       await loadData();
@@ -1034,6 +1038,32 @@ export default function InventoryPage() {
       setSelectedLocIdsForDelete((prev) =>
         Array.from(new Set([...prev, ...allVisibleIds])),
       );
+    }
+  };
+
+  const handleSaveCapacityChanges = async () => {
+    const updates = Object.entries(editedCapacities).map(([id, capacity]) => ({
+      id,
+      capacity: Number(capacity),
+    }));
+
+    if (updates.length === 0) return;
+
+    setSubmitting(true);
+    try {
+      await inventoryService.updateLocationsCapacity(updates);
+      setSuccessMsg(
+        `Capacidad actualizada en ${updates.length} ubicación(es).`,
+      );
+      setEditedCapacities({});
+      await loadLocationsForWarehouse(targetConfigWhId);
+      await loadData();
+    } catch (err: any) {
+      setErrorMsg(
+        err.response?.data?.message || 'Error al actualizar capacidades.',
+      );
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -1088,6 +1118,7 @@ export default function InventoryPage() {
 
   const pendingCount = physicalControlItems.filter((i) => !i.isChecked).length;
   const checkedCount = physicalControlItems.filter((i) => i.isChecked).length;
+  const editedCapacitiesCount = Object.keys(editedCapacities).length;
 
   return (
     <ProtectedRoute allowedRoles={['ADMIN', 'WAREHOUSE_MANAGER', 'PICKER']}>
@@ -1166,7 +1197,7 @@ export default function InventoryPage() {
           </nav>
         </header>
 
-        {/* NOTIFICACIONES Y ALERTAS (ACCESIBLES CON ARIA-LIVE) */}
+        {/* NOTIFICACIONES Y ALERTAS */}
         {errorMsg && (
           <div
             role="alert"
@@ -2509,7 +2540,8 @@ export default function InventoryPage() {
                         <input
                           id="gen-capacity-input"
                           type="number"
-                          step="0.5"
+                          step="0.1"
+                          min="0.1"
                           value={genCapacityM3}
                           onChange={(e) =>
                             setGenCapacityM3(Number(e.target.value))
@@ -2589,7 +2621,7 @@ export default function InventoryPage() {
                     </button>
                   </div>
 
-                  {/* MANTENIMIENTO MASIVO */}
+                  {/* MANTENIMIENTO MASIVO CON GUARDADO DE CAPACIDADES */}
                   <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4 flex flex-col justify-between">
                     <div className="space-y-4">
                       <div className="flex justify-between items-center border-b border-slate-800 pb-2">
@@ -2685,13 +2717,20 @@ export default function InventoryPage() {
                           const isSelected = selectedLocIdsForDelete.includes(
                             loc.id,
                           );
+                          const currentCapValue =
+                            editedCapacities[loc.id] !== undefined
+                              ? editedCapacities[loc.id]
+                              : loc.maxCapacityM3;
+
                           return (
                             <div
                               key={loc.id}
                               className={`p-2.5 rounded-xl border flex items-center justify-between text-xs ${
                                 isSelected
                                   ? 'bg-red-950/30 border-red-500'
-                                  : 'bg-slate-950 border-slate-800'
+                                  : editedCapacities[loc.id] !== undefined
+                                    ? 'bg-amber-950/30 border-amber-500'
+                                    : 'bg-slate-950 border-slate-800'
                               }`}
                             >
                               <div
@@ -2731,8 +2770,16 @@ export default function InventoryPage() {
                                 <input
                                   id={`cap-input-${loc.id}`}
                                   type="number"
-                                  step="0.5"
-                                  defaultValue={loc.maxCapacityM3}
+                                  step="0.1"
+                                  min="0.1"
+                                  value={currentCapValue}
+                                  onChange={(e) => {
+                                    const val = Number(e.target.value);
+                                    setEditedCapacities((prev) => ({
+                                      ...prev,
+                                      [loc.id]: val,
+                                    }));
+                                  }}
                                   className="w-16 bg-slate-900 border border-slate-800 px-2 py-1 rounded text-amber-400 font-bold text-center text-xs"
                                 />
                               </div>
@@ -2776,17 +2823,31 @@ export default function InventoryPage() {
                       )}
                     </div>
 
-                    {selectedLocIdsForDelete.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={handleDeleteSelectedLocations}
-                        disabled={submitting}
-                        className="w-full py-3 bg-red-600 text-white font-black rounded-xl text-xs shadow-lg mt-4 disabled:opacity-50"
-                      >
-                        ELIMINAR {selectedLocIdsForDelete.length} POSICIONES
-                        SELECCIONADAS
-                      </button>
-                    )}
+                    <div className="space-y-2 mt-4">
+                      {editedCapacitiesCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleSaveCapacityChanges}
+                          disabled={submitting}
+                          className="w-full py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black rounded-xl text-xs shadow-lg disabled:opacity-50"
+                        >
+                          💾 GUARDAR {editedCapacitiesCount} CAMBIO(S) DE
+                          CAPACIDAD
+                        </button>
+                      )}
+
+                      {selectedLocIdsForDelete.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleDeleteSelectedLocations}
+                          disabled={submitting}
+                          className="w-full py-3 bg-red-600 text-white font-black rounded-xl text-xs shadow-lg disabled:opacity-50"
+                        >
+                          ELIMINAR {selectedLocIdsForDelete.length} POSICIONES
+                          SELECCIONADAS
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               </section>
