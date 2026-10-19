@@ -253,6 +253,10 @@ export class InventoryService {
   }
 
   async deleteLocationsBatch(locationIds: string[]) {
+    if (!locationIds || locationIds.length === 0) {
+      return { count: 0 };
+    }
+
     const invCount = await this.prisma.inventory.count({
       where: { locationId: { in: locationIds } },
     });
@@ -370,7 +374,7 @@ export class InventoryService {
       id: c.id,
       containerNumber: c.containerNumber,
       warehouseId: c.warehouseId,
-      warehouseName: c.warehouse.name,
+      warehouseName: c.warehouse?.name || 'Sin Depósito',
       status: c.status,
       arrivalDate: c.createdAt,
       dischargeDate: c.dischargeDate,
@@ -389,8 +393,8 @@ export class InventoryService {
         quantityBultos: i.quantityBultos,
         unitsPerBox: i.unitsPerBox,
         totalUnits: i.totalUnits,
-        weightPerBultoKg: Number(i.weightPerBultoKg),
-        volumePerBultoM3: Number(i.volumePerBultoM3),
+        weightPerBultoKg: Number(i.weightPerBultoKg || 0),
+        volumePerBultoM3: Number(i.volumePerBultoM3 || 0),
         locationId: i.locationId,
         isControlled: i.isControlled,
         controlledBy: i.controlledBy
@@ -417,6 +421,14 @@ export class InventoryService {
     return this.prisma.inboundContainer.delete({ where: { id: containerId } });
   }
 
+  // AUXILIAR: VALIDADOR REGEX UUID V4
+  private isValidUuid(id?: string): boolean {
+    if (!id) return false;
+    const uuidRegex =
+      /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+    return uuidRegex.test(id);
+  }
+
   // FASE 2: PROCESAR ESTIBADO MÓVIL
   async processInbound(dto: {
     containerId: string;
@@ -431,12 +443,20 @@ export class InventoryService {
 
     if (!container) throw new NotFoundException('Contenedor no encontrado.');
 
-    const activeUser = userId
-      ? await this.prisma.user.findUnique({ where: { id: userId } })
-      : await this.prisma.user.findFirst();
+    let activeUser = null;
+    if (this.isValidUuid(userId)) {
+      activeUser = await this.prisma.user.findUnique({
+        where: { id: userId },
+      });
+    }
+    if (!activeUser) {
+      activeUser = await this.prisma.user.findFirst();
+    }
 
     if (!activeUser)
-      throw new BadRequestException('No hay usuarios en el sistema.');
+      throw new BadRequestException(
+        'No hay usuarios registrados en el sistema.',
+      );
 
     return this.prisma.$transaction(async (tx) => {
       for (const item of items) {
@@ -542,24 +562,30 @@ export class InventoryService {
       );
     }
 
-    const targetLocation = await this.prisma.location.findUnique({
-      where: { id: targetLocationId },
-    });
-
-    if (!targetLocation)
-      throw new NotFoundException('Ubicación destino no encontrada.');
-
-    const destinationWarehouseId =
-      targetWarehouseId || targetLocation.warehouseId;
-
-    const activeUser = userId
-      ? await this.prisma.user.findUnique({ where: { id: userId } })
-      : await this.prisma.user.findFirst();
+    let activeUser = null;
+    if (this.isValidUuid(userId)) {
+      activeUser = await this.prisma.user.findUnique({
+        where: { id: userId },
+      });
+    }
+    if (!activeUser) {
+      activeUser = await this.prisma.user.findFirst();
+    }
 
     if (!activeUser)
       throw new BadRequestException('Usuario no válido en el sistema.');
 
     return this.prisma.$transaction(async (tx) => {
+      const targetLocation = await tx.location.findUnique({
+        where: { id: targetLocationId },
+      });
+
+      if (!targetLocation)
+        throw new NotFoundException('Ubicación destino no encontrada.');
+
+      const destinationWarehouseId =
+        targetWarehouseId || targetLocation.warehouseId;
+
       // 1. Restar o eliminar stock del origen
       if (sourceInv.quantity === quantityBultos) {
         await tx.inventory.delete({ where: { id: sourceInv.id } });

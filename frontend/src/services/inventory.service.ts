@@ -79,6 +79,7 @@ export const inventoryService = {
   transferStock: async (payload: {
     inventoryId: string;
     targetLocationId: string;
+    targetWarehouseId?: string;
     quantityBultos: number;
     userId?: string;
   }) => {

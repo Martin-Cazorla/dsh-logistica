@@ -17,10 +17,16 @@ import {
 } from '@/types/inventory.types';
 
 export default function InventoryPage() {
+  // ---------------------------------------------------------------------------
+  // ESTADOS PRINCIPALES DE NAVEGACIÓN Y PESTAÑAS
+  // ---------------------------------------------------------------------------
   const [activeTab, setActiveTab] = useState<
     'MALLA' | 'INBOUND' | 'HISTORIAL' | 'STOCK' | 'CONFIG'
   >('MALLA');
 
+  // ---------------------------------------------------------------------------
+  // ESTADOS DE DATOS DE LA APLICACIÓN
+  // ---------------------------------------------------------------------------
   const [warehouses, setWarehouses] = useState<WarehouseOccupancy[]>([]);
   const [simpleWarehousesList, setSimpleWarehousesList] = useState<
     { id: string; name: string }[]
@@ -29,22 +35,29 @@ export default function InventoryPage() {
   const [locations, setLocations] = useState<PhysicalLocation[]>([]);
   const [containersHistory, setContainersHistory] = useState<any[]>([]);
 
+  // Estados de carga e interfaz (Feedback de UI)
   const [loading, setLoading] = useState<boolean>(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
+  // Modal para impresión de rótulos A4
   const [printModalData, setPrintModalData] = useState<PalletLabelData | null>(
     null,
   );
 
-  // Malla Ocupación
+  // ---------------------------------------------------------------------------
+  // ESTADOS: TAB 1 - MALLA DE OCUPACIÓN
+  // ---------------------------------------------------------------------------
   const [selectedMallaWarehouseId, setSelectedMallaWarehouseId] = useState<
     string | null
   >(null);
   const [mallaZoneFilter, setMallaZoneFilter] = useState<string>('ALL');
   const [mallaCodeSearch, setMallaCodeSearch] = useState<string>('');
 
-  // Pre-carga Inbound (Fase 1)
+  // ---------------------------------------------------------------------------
+  // ESTADOS: TAB 2 - CONTROL MÓVIL Y PRE-CARGA (FASE 1 Y FASE 2)
+  // ---------------------------------------------------------------------------
+  // Fase 1: Pre-carga de Packing List
   const [containerNumber, setContainerNumber] = useState<string>('');
   const [packingList, setPackingList] = useState<PackingListItem[]>([
     {
@@ -69,7 +82,7 @@ export default function InventoryPage() {
     },
   ]);
 
-  // Selección para Descarga Móvil (Fase 2)
+  // Fase 2: Descarga Física y Control Móvil
   const [selectedPendingContainerId, setSelectedPendingContainerId] =
     useState<string>('');
   const [dischargeWarehouseId, setDischargeWarehouseId] = useState<string>('');
@@ -78,12 +91,12 @@ export default function InventoryPage() {
   );
   const [physicalControlItems, setPhysicalControlItems] = useState<any[]>([]);
 
-  // Buscadores de ubicación en Fase 2
+  // Búsqueda rápida de ubicaciones dentro de ítems en Fase 2
   const [phase2LocationSearches, setPhase2LocationSearches] = useState<
     Record<string, string>
   >({});
 
-  // Filtros, Acordeón y Sockets
+  // Filtros, Acordeón y Sockets en tiempo real
   const [phase2SearchTerm, setPhase2SearchTerm] = useState<string>('');
   const [phase2Tab, setPhase2Tab] = useState<'PENDIENTES' | 'CONTROLADOS'>(
     'PENDIENTES',
@@ -94,13 +107,15 @@ export default function InventoryPage() {
   >({});
   const [socket, setSocket] = useState<Socket | null>(null);
 
-  // Usuario activo
+  // Usuario activo en sesión
   const [currentUser] = useState({
     id: 'usr-operario-1',
     name: 'Martín Cazorla',
   });
 
-  // HISTORIAL
+  // ---------------------------------------------------------------------------
+  // ESTADOS: TAB 3 - HISTORIAL DE CONTENEDORES
+  // ---------------------------------------------------------------------------
   const [historySearchQuery, setHistorySearchQuery] = useState<string>('');
   const [historyDateFilter, setHistoryDateFilter] = useState<string>('');
   const [selectedContainerDetail, setSelectedContainerDetail] = useState<
@@ -108,7 +123,9 @@ export default function InventoryPage() {
   >(null);
   const [historyPage, setHistoryPage] = useState<number>(1);
 
-  // STOCK Y REUBICACIÓN DE PALLETS
+  // ---------------------------------------------------------------------------
+  // ESTADOS: TAB 4 - STOCK Y REUBICACIÓN DE PALLETS
+  // ---------------------------------------------------------------------------
   const [stockSearchQuery, setStockSearchQuery] = useState<string>('');
   const [stockPage, setStockPage] = useState<number>(1);
   const [relocateItem, setRelocateItem] = useState<{
@@ -124,12 +141,16 @@ export default function InventoryPage() {
   } | null>(null);
   const [selectedSourceInventoryId, setSelectedSourceInventoryId] =
     useState<string>('');
+  const [relocateTargetWarehouseId, setRelocateTargetWarehouseId] =
+    useState<string>('');
   const [relocateTargetLocId, setRelocateTargetLocId] = useState<string>('');
   const [relocateSearchLocQuery, setRelocateSearchLocQuery] =
     useState<string>('');
   const [relocateQuantity, setRelocateQuantity] = useState<number>(1);
 
-  // CONFIGURACIÓN DE UBICACIONES
+  // ---------------------------------------------------------------------------
+  // ESTADOS: TAB 5 - MANTENIMIENTO Y CONFIGURACIÓN DE UBICACIONES
+  // ---------------------------------------------------------------------------
   const [newWhName, setNewWhName] = useState<string>('');
   const [targetConfigWhId, setTargetConfigWhId] = useState<string>('');
   const [selectedAreaFilter, setSelectedAreaFilter] = useState<string>('ALL');
@@ -149,6 +170,9 @@ export default function InventoryPage() {
 
   const ITEMS_PER_PAGE = 10;
 
+  // ---------------------------------------------------------------------------
+  // EFECTOS DE INICIALIZACIÓN Y WEBSOCKETS
+  // ---------------------------------------------------------------------------
   useEffect(() => {
     loadData();
 
@@ -287,7 +311,6 @@ export default function InventoryPage() {
     socket,
   ]);
 
-  // Actualizar pallets con la primera ubicación disponible al cambiar de depósito
   useEffect(() => {
     if (locations.length > 0 && physicalControlItems.length > 0) {
       const defaultLocId = locations[0].id;
@@ -303,6 +326,9 @@ export default function InventoryPage() {
     }
   }, [locations]);
 
+  // ---------------------------------------------------------------------------
+  // FUNCIONES DE CARGA DE DATOS API
+  // ---------------------------------------------------------------------------
   const loadData = async () => {
     setLoading(true);
     setErrorMsg(null);
@@ -355,6 +381,9 @@ export default function InventoryPage() {
     }
   };
 
+  // ---------------------------------------------------------------------------
+  // PROPIEDADES COMPUTADAS (USEMEMO)
+  // ---------------------------------------------------------------------------
   const pendingContainers = useMemo(
     () => containersHistory.filter((c) => c.status === 'PENDIENTE'),
     [containersHistory],
@@ -505,19 +534,21 @@ export default function InventoryPage() {
     });
   }, [physicalControlItems, phase2Tab, phase2SearchTerm]);
 
-  // Filtrado dinámico de ubicaciones para el modal de reubicación
   const filteredRelocateLocations = useMemo(() => {
     const q = relocateSearchLocQuery.toLowerCase().trim();
-    if (!q) return locations.slice(0, 15);
+    if (!q) return locations.slice(0, 30);
     return locations
       .filter(
         (l) =>
           l.code.toLowerCase().includes(q) ||
           (l.zoneName && l.zoneName.toLowerCase().includes(q)),
       )
-      .slice(0, 15);
+      .slice(0, 30);
   }, [locations, relocateSearchLocQuery]);
 
+  // ---------------------------------------------------------------------------
+  // MANEJADORES DE EVENTOS DE INTERFAZ
+  // ---------------------------------------------------------------------------
   const toggleItemAccordion = (sku: string) => {
     const lock = activeLocks[sku];
     if (lock && lock.userId !== currentUser.id) return;
@@ -698,6 +729,9 @@ export default function InventoryPage() {
     });
   };
 
+  // ---------------------------------------------------------------------------
+  // ACCIONES HTTP CON EL BACKEND (CREAR, PROCESAR Y BORRAR)
+  // ---------------------------------------------------------------------------
   const handleCreateWarehouse = async () => {
     if (!newWhName.trim()) {
       setErrorMsg('Escriba el nombre del depósito.');
@@ -936,6 +970,7 @@ export default function InventoryPage() {
       await inventoryService.transferStock({
         inventoryId: selectedSourceInventoryId,
         targetLocationId: relocateTargetLocId,
+        targetWarehouseId: relocateTargetWarehouseId || source.warehouseId,
         quantityBultos: relocateQuantity,
         userId: currentUser.id,
       });
@@ -945,6 +980,7 @@ export default function InventoryPage() {
       );
       setRelocateItem(null);
       setSelectedSourceInventoryId('');
+      setRelocateTargetWarehouseId('');
       setRelocateTargetLocId('');
       setRelocateSearchLocQuery('');
       await loadData();
@@ -1055,8 +1091,9 @@ export default function InventoryPage() {
 
   return (
     <ProtectedRoute allowedRoles={['ADMIN', 'WAREHOUSE_MANAGER', 'PICKER']}>
-      <div className="min-h-screen bg-slate-950 text-slate-100 p-3 sm:p-6 font-sans">
-        <div className="flex flex-wrap justify-between items-center bg-slate-900 p-4 rounded-2xl border border-slate-800 shadow-xl mb-6 gap-4">
+      <main className="min-h-screen bg-slate-950 text-slate-100 p-3 sm:p-6 font-sans">
+        {/* ENCABEZADO Y NAVEGACIÓN */}
+        <header className="flex flex-wrap justify-between items-center bg-slate-900 p-4 rounded-2xl border border-slate-800 shadow-xl mb-6 gap-4">
           <div>
             <h1 className="text-xl sm:text-2xl font-black text-amber-400 tracking-wide">
               Gestión de Inventario & Control Móvil
@@ -1067,77 +1104,99 @@ export default function InventoryPage() {
             </p>
           </div>
 
-          <div className="flex flex-wrap bg-slate-950 p-1 rounded-xl border border-slate-800 gap-1">
+          <nav
+            aria-label="Navegación de secciones de inventario"
+            className="flex flex-wrap bg-slate-950 p-1 rounded-xl border border-slate-800 gap-1"
+          >
             <button
+              type="button"
               onClick={() => setActiveTab('MALLA')}
-              className={`px-3 py-2 rounded-lg text-xs font-bold ${
+              className={`px-3 py-2 rounded-lg text-xs font-bold transition-colors ${
                 activeTab === 'MALLA'
                   ? 'bg-amber-500 text-slate-950'
-                  : 'text-slate-400'
+                  : 'text-slate-400 hover:text-white'
               }`}
             >
               Malla Ocupación
             </button>
             <button
+              type="button"
               onClick={() => setActiveTab('INBOUND')}
-              className={`px-3 py-2 rounded-lg text-xs font-bold ${
+              className={`px-3 py-2 rounded-lg text-xs font-bold transition-colors ${
                 activeTab === 'INBOUND'
                   ? 'bg-amber-500 text-slate-950'
-                  : 'text-slate-400'
+                  : 'text-slate-400 hover:text-white'
               }`}
             >
               Control Móvil & Pre-Carga
             </button>
             <button
+              type="button"
               onClick={() => setActiveTab('HISTORIAL')}
-              className={`px-3 py-2 rounded-lg text-xs font-bold ${
+              className={`px-3 py-2 rounded-lg text-xs font-bold transition-colors ${
                 activeTab === 'HISTORIAL'
                   ? 'bg-amber-500 text-slate-950'
-                  : 'text-slate-400'
+                  : 'text-slate-400 hover:text-white'
               }`}
             >
               Historial Contenedores
             </button>
             <button
+              type="button"
               onClick={() => setActiveTab('STOCK')}
-              className={`px-3 py-2 rounded-lg text-xs font-bold ${
+              className={`px-3 py-2 rounded-lg text-xs font-bold transition-colors ${
                 activeTab === 'STOCK'
                   ? 'bg-amber-500 text-slate-950'
-                  : 'text-slate-400'
+                  : 'text-slate-400 hover:text-white'
               }`}
             >
               Stock & Rótulos
             </button>
             <button
+              type="button"
               onClick={() => setActiveTab('CONFIG')}
-              className={`px-3 py-2 rounded-lg text-xs font-bold ${
+              className={`px-3 py-2 rounded-lg text-xs font-bold transition-colors ${
                 activeTab === 'CONFIG'
                   ? 'bg-amber-500 text-slate-950'
-                  : 'text-slate-400'
+                  : 'text-slate-400 hover:text-white'
               }`}
             >
               Mantenimiento Ubicaciones
             </button>
-          </div>
-        </div>
+          </nav>
+        </header>
 
+        {/* NOTIFICACIONES Y ALERTAS (ACCESIBLES CON ARIA-LIVE) */}
         {errorMsg && (
-          <div className="bg-red-950/80 border border-red-500/80 text-red-200 p-4 rounded-xl mb-6 text-sm flex justify-between items-center">
+          <div
+            role="alert"
+            aria-live="assertive"
+            className="bg-red-950/80 border border-red-500/80 text-red-200 p-4 rounded-xl mb-6 text-sm flex justify-between items-center"
+          >
             <span>Atención: {errorMsg}</span>
             <button
+              type="button"
               onClick={() => setErrorMsg(null)}
-              className="text-xs font-bold underline"
+              aria-label="Cerrar notificación de error"
+              className="text-xs font-bold underline hover:text-white"
             >
               Cerrar
             </button>
           </div>
         )}
+
         {successMsg && (
-          <div className="bg-emerald-950/80 border border-emerald-500/80 text-emerald-200 p-4 rounded-xl mb-6 text-sm flex justify-between items-center">
+          <div
+            role="status"
+            aria-live="polite"
+            className="bg-emerald-950/80 border border-emerald-500/80 text-emerald-200 p-4 rounded-xl mb-6 text-sm flex justify-between items-center"
+          >
             <span>Éxito: {successMsg}</span>
             <button
+              type="button"
               onClick={() => setSuccessMsg(null)}
-              className="text-xs font-bold underline"
+              aria-label="Cerrar mensaje de éxito"
+              className="text-xs font-bold underline hover:text-white"
             >
               Cerrar
             </button>
@@ -1145,7 +1204,7 @@ export default function InventoryPage() {
         )}
 
         {loading ? (
-          <div className="text-center py-16">
+          <div className="text-center py-16" aria-label="Cargando información">
             <div className="inline-block animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-amber-400"></div>
             <p className="mt-4 text-slate-400 text-sm">
               Cargando inventario...
@@ -1153,9 +1212,11 @@ export default function InventoryPage() {
           </div>
         ) : (
           <>
+            {/* ------------------------------------------------------------------ */}
             {/* TAB: MALLA OCUPACIÓN */}
+            {/* ------------------------------------------------------------------ */}
             {activeTab === 'MALLA' && (
-              <div className="space-y-6">
+              <section className="space-y-6">
                 {!selectedMallaWarehouse ? (
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                     {warehouses.map((wh) => {
@@ -1219,9 +1280,12 @@ export default function InventoryPage() {
                             </div>
                           </div>
 
-                          <button className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold rounded-xl text-xs mt-2 transition-colors flex items-center justify-center gap-2">
+                          <button
+                            type="button"
+                            className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold rounded-xl text-xs mt-2 transition-colors flex items-center justify-center gap-2"
+                          >
                             <span>Ver Mapa de Posiciones</span>
-                            <span>→</span>
+                            <span aria-hidden="true">→</span>
                           </button>
                         </div>
                       );
@@ -1232,6 +1296,7 @@ export default function InventoryPage() {
                     <div className="flex flex-wrap justify-between items-center gap-4 border-b border-slate-800 pb-4">
                       <div>
                         <button
+                          type="button"
                           onClick={() => {
                             setSelectedMallaWarehouseId(null);
                             setMallaZoneFilter('ALL');
@@ -1252,25 +1317,43 @@ export default function InventoryPage() {
                       </div>
 
                       <div className="flex flex-wrap gap-3 items-center">
-                        <input
-                          type="text"
-                          placeholder="Buscar posición (Ej. A21)..."
-                          value={mallaCodeSearch}
-                          onChange={(e) => setMallaCodeSearch(e.target.value)}
-                          className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-mono"
-                        />
-                        <select
-                          value={mallaZoneFilter}
-                          onChange={(e) => setMallaZoneFilter(e.target.value)}
-                          className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-bold"
-                        >
-                          <option value="ALL">Todas las Áreas / Racks</option>
-                          {availableMallaZones.map((zone) => (
-                            <option key={zone} value={zone}>
-                              {zone}
-                            </option>
-                          ))}
-                        </select>
+                        <div>
+                          <label
+                            htmlFor="malla-search-input"
+                            className="sr-only"
+                          >
+                            Buscar posición
+                          </label>
+                          <input
+                            id="malla-search-input"
+                            type="text"
+                            placeholder="Buscar posición (Ej. A21)..."
+                            value={mallaCodeSearch}
+                            onChange={(e) => setMallaCodeSearch(e.target.value)}
+                            className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-mono"
+                          />
+                        </div>
+                        <div>
+                          <label
+                            htmlFor="malla-zone-filter"
+                            className="sr-only"
+                          >
+                            Filtrar por Área o Rack
+                          </label>
+                          <select
+                            id="malla-zone-filter"
+                            value={mallaZoneFilter}
+                            onChange={(e) => setMallaZoneFilter(e.target.value)}
+                            className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-bold"
+                          >
+                            <option value="ALL">Todas las Áreas / Racks</option>
+                            {availableMallaZones.map((zone) => (
+                              <option key={zone} value={zone}>
+                                {zone}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
                       </div>
                     </div>
 
@@ -1291,22 +1374,29 @@ export default function InventoryPage() {
                     </div>
                   </div>
                 )}
-              </div>
+              </section>
             )}
 
+            {/* ------------------------------------------------------------------ */}
             {/* TAB: CONTROL MÓVIL Y PRE-CARGA */}
+            {/* ------------------------------------------------------------------ */}
             {activeTab === 'INBOUND' && (
-              <div className="space-y-6">
+              <section className="space-y-6">
+                {/* FASE 1 */}
                 <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
                   <h2 className="text-base font-bold text-amber-400 border-b border-slate-800 pb-2">
                     FASE 1: Pre-carga de Contenedores / Packing List
                   </h2>
 
                   <div>
-                    <label className="block text-xs text-slate-300 mb-1">
+                    <label
+                      htmlFor="container-number-input"
+                      className="block text-xs text-slate-300 mb-1"
+                    >
                       Número de Contenedor / Remito *
                     </label>
                     <input
+                      id="container-number-input"
                       type="text"
                       value={containerNumber}
                       onChange={(e) => setContainerNumber(e.target.value)}
@@ -1321,6 +1411,7 @@ export default function InventoryPage() {
                         Detalle de Ítems del Packing List
                       </span>
                       <button
+                        type="button"
                         onClick={handleAddPackingItem}
                         className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold rounded text-xs"
                       >
@@ -1334,10 +1425,14 @@ export default function InventoryPage() {
                         className="bg-slate-950 p-3 rounded-xl border border-slate-800 grid grid-cols-1 sm:grid-cols-12 gap-3 text-xs items-end"
                       >
                         <div className="sm:col-span-3">
-                          <label className="block text-slate-400 mb-1">
+                          <label
+                            htmlFor={`sku-input-${idx}`}
+                            className="block text-slate-400 mb-1"
+                          >
                             Código SKU *
                           </label>
                           <input
+                            id={`sku-input-${idx}`}
                             type="text"
                             value={item.productSku}
                             onChange={(e) =>
@@ -1353,10 +1448,14 @@ export default function InventoryPage() {
                         </div>
 
                         <div className="sm:col-span-4">
-                          <label className="block text-slate-400 mb-1">
+                          <label
+                            htmlFor={`name-input-${idx}`}
+                            className="block text-slate-400 mb-1"
+                          >
                             Descripción *
                           </label>
                           <input
+                            id={`name-input-${idx}`}
                             type="text"
                             value={item.productName}
                             onChange={(e) =>
@@ -1372,10 +1471,14 @@ export default function InventoryPage() {
                         </div>
 
                         <div className="sm:col-span-2">
-                          <label className="block text-slate-400 mb-1">
+                          <label
+                            htmlFor={`bultos-input-${idx}`}
+                            className="block text-slate-400 mb-1"
+                          >
                             Total Bultos
                           </label>
                           <input
+                            id={`bultos-input-${idx}`}
                             type="number"
                             value={item.quantityBultosExpected}
                             onChange={(e) =>
@@ -1390,10 +1493,14 @@ export default function InventoryPage() {
                         </div>
 
                         <div className="sm:col-span-2">
-                          <label className="block text-slate-400 mb-1">
+                          <label
+                            htmlFor={`units-input-${idx}`}
+                            className="block text-slate-400 mb-1"
+                          >
                             Total Unidades
                           </label>
                           <input
+                            id={`units-input-${idx}`}
                             type="number"
                             value={item.totalUnitsExpected}
                             onChange={(e) =>
@@ -1410,7 +1517,9 @@ export default function InventoryPage() {
                         <div className="sm:col-span-1 flex justify-end">
                           {packingList.length > 1 && (
                             <button
+                              type="button"
                               onClick={() => handleRemovePackingItem(idx)}
+                              aria-label={`Eliminar producto #${idx + 1}`}
                               className="px-2 py-2 bg-red-950 border border-red-800 text-red-400 hover:bg-red-900 rounded font-bold w-full text-center"
                             >
                               X
@@ -1422,15 +1531,16 @@ export default function InventoryPage() {
                   </div>
 
                   <button
+                    type="button"
                     onClick={handleSavePackingList}
                     disabled={submitting}
-                    className="px-5 py-3 bg-amber-500 text-slate-950 font-black rounded-xl text-xs shadow-lg hover:bg-amber-400 transition-colors"
+                    className="px-5 py-3 bg-amber-500 text-slate-950 font-black rounded-xl text-xs shadow-lg hover:bg-amber-400 transition-colors disabled:opacity-50"
                   >
                     PRE-CARGAR PACKING LIST EN BASE DE DATOS
                   </button>
                 </div>
 
-                {/* FASE 2: CONTROL MÓVIL Y ESTIBADO MÚLTIPLE COMPLETO */}
+                {/* FASE 2 */}
                 <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-5">
                   <h2 className="text-base font-bold text-amber-400 border-b border-slate-800 pb-2">
                     FASE 2: Control Móvil y Descarga Físico-Estibado
@@ -1438,10 +1548,14 @@ export default function InventoryPage() {
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                     <div>
-                      <label className="block text-xs text-slate-300 mb-1">
+                      <label
+                        htmlFor="pending-container-select"
+                        className="block text-xs text-slate-300 mb-1"
+                      >
                         Seleccionar Contenedor Arribado *
                       </label>
                       <select
+                        id="pending-container-select"
                         value={selectedPendingContainerId}
                         onChange={(e) =>
                           setSelectedPendingContainerId(e.target.value)
@@ -1460,10 +1574,14 @@ export default function InventoryPage() {
                     </div>
 
                     <div>
-                      <label className="block text-xs text-slate-300 mb-1">
+                      <label
+                        htmlFor="discharge-warehouse-select"
+                        className="block text-xs text-slate-300 mb-1"
+                      >
                         Depósito de Ingreso *
                       </label>
                       <select
+                        id="discharge-warehouse-select"
                         value={dischargeWarehouseId}
                         onChange={(e) => {
                           const newWhId = e.target.value;
@@ -1481,10 +1599,14 @@ export default function InventoryPage() {
                     </div>
 
                     <div>
-                      <label className="block text-xs text-slate-300 mb-1">
+                      <label
+                        htmlFor="entry-date-input"
+                        className="block text-xs text-slate-300 mb-1"
+                      >
                         Fecha Ingreso *
                       </label>
                       <input
+                        id="entry-date-input"
                         type="date"
                         value={generalEntryDate}
                         onChange={(e) => setGeneralEntryDate(e.target.value)}
@@ -1499,6 +1621,7 @@ export default function InventoryPage() {
                         <div className="flex flex-wrap justify-between items-center gap-3 bg-slate-950 p-3 rounded-xl border border-slate-800">
                           <div className="flex bg-slate-900 p-1 rounded-lg border border-slate-800 gap-1">
                             <button
+                              type="button"
                               onClick={() => setPhase2Tab('PENDIENTES')}
                               className={`px-3 py-1.5 rounded text-xs font-bold ${
                                 phase2Tab === 'PENDIENTES'
@@ -1509,6 +1632,7 @@ export default function InventoryPage() {
                               Pendientes ({pendingCount})
                             </button>
                             <button
+                              type="button"
                               onClick={() => setPhase2Tab('CONTROLADOS')}
                               className={`px-3 py-1.5 rounded text-xs font-bold ${
                                 phase2Tab === 'CONTROLADOS'
@@ -1521,7 +1645,14 @@ export default function InventoryPage() {
                           </div>
 
                           <div className="flex-1 min-w-[200px]">
+                            <label
+                              htmlFor="phase2-search-input"
+                              className="sr-only"
+                            >
+                              Buscar por SKU o Descripción
+                            </label>
                             <input
+                              id="phase2-search-input"
                               type="text"
                               placeholder="🔍 Buscar por SKU o Descripción..."
                               value={phase2SearchTerm}
@@ -1562,13 +1693,13 @@ export default function InventoryPage() {
                                   className="p-3.5 flex justify-between items-center cursor-pointer select-none"
                                 >
                                   <div>
-                                    <h4 className="font-black text-white text-sm">
+                                    <h3 className="font-black text-white text-sm">
                                       SKU:{' '}
                                       <span className="text-amber-400">
                                         {item.sku}
                                       </span>{' '}
                                       - {item.description}
-                                    </h4>
+                                    </h3>
                                     <p className="text-xs text-slate-400 mt-0.5">
                                       Bultos:{' '}
                                       <strong className="text-amber-400">
@@ -1584,6 +1715,7 @@ export default function InventoryPage() {
 
                                   <div className="flex items-center gap-3">
                                     <button
+                                      type="button"
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         toggleItemControlStatus(realIdx);
@@ -1604,15 +1736,19 @@ export default function InventoryPage() {
                                   </div>
                                 </div>
 
-                                {/* BLOQUE RESTAURADO: UNIDADES, MEDIDAS, PESO, MUESTRAS Y PALLETS */}
+                                {/* DESPLEGABLE DE EDICIÓN Y PALLETS */}
                                 {isExpanded && !isLockedByOther && (
                                   <div className="p-4 border-t border-slate-800 space-y-4 text-xs bg-slate-900/40 rounded-b-xl">
                                     <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 bg-slate-900 p-3 rounded-lg border border-slate-800">
                                       <div>
-                                        <label className="block text-slate-400 mb-1">
+                                        <label
+                                          htmlFor={`units-per-box-${realIdx}`}
+                                          className="block text-slate-400 mb-1"
+                                        >
                                           Unidades por Bulto
                                         </label>
                                         <input
+                                          id={`units-per-box-${realIdx}`}
                                           type="number"
                                           value={item.unitsPerBox}
                                           onChange={(e) =>
@@ -1627,11 +1763,12 @@ export default function InventoryPage() {
                                       </div>
 
                                       <div>
-                                        <label className="block text-slate-400 mb-1">
+                                        <span className="block text-slate-400 mb-1">
                                           Medidas (L x A x H cm)
-                                        </label>
+                                        </span>
                                         <div className="flex gap-1">
                                           <input
+                                            aria-label="Largo en cm"
                                             type="number"
                                             value={item.lengthCm}
                                             onChange={(e) =>
@@ -1644,6 +1781,7 @@ export default function InventoryPage() {
                                             className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center"
                                           />
                                           <input
+                                            aria-label="Ancho en cm"
                                             type="number"
                                             value={item.widthCm}
                                             onChange={(e) =>
@@ -1656,6 +1794,7 @@ export default function InventoryPage() {
                                             className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center"
                                           />
                                           <input
+                                            aria-label="Alto en cm"
                                             type="number"
                                             value={item.heightCm}
                                             onChange={(e) =>
@@ -1671,10 +1810,14 @@ export default function InventoryPage() {
                                       </div>
 
                                       <div>
-                                        <label className="block text-slate-400 mb-1">
+                                        <label
+                                          htmlFor={`weight-input-${realIdx}`}
+                                          className="block text-slate-400 mb-1"
+                                        >
                                           Peso por Bulto (Kg)
                                         </label>
                                         <input
+                                          id={`weight-input-${realIdx}`}
                                           type="number"
                                           value={item.weightPerBultoKg}
                                           onChange={(e) =>
@@ -1706,6 +1849,7 @@ export default function InventoryPage() {
                                         </label>
                                         {item.hasShowroomSample && (
                                           <input
+                                            aria-label="Cantidad de unidades para muestra"
                                             type="number"
                                             placeholder="Cant. Unidades"
                                             value={item.sampleUnitsCount}
@@ -1722,13 +1866,14 @@ export default function InventoryPage() {
                                       </div>
                                     </div>
 
-                                    {/* GESTIÓN Y ASIGNACIÓN DE POSICIONES */}
+                                    {/* GESTIÓN DE PALLETS */}
                                     <div className="space-y-2">
                                       <div className="flex justify-between items-center">
                                         <span className="font-bold text-slate-300 text-xs">
                                           Distribución de Pallets y Estibado
                                         </span>
                                         <button
+                                          type="button"
                                           onClick={() =>
                                             handleAddPalletToItem(realIdx)
                                           }
@@ -1773,10 +1918,14 @@ export default function InventoryPage() {
                                               </div>
 
                                               <div className="sm:col-span-3">
-                                                <label className="block text-slate-400 mb-1">
+                                                <label
+                                                  htmlFor={`pallet-qty-${realIdx}-${pIdx}`}
+                                                  className="block text-slate-400 mb-1"
+                                                >
                                                   Bultos en Pallet
                                                 </label>
                                                 <input
+                                                  id={`pallet-qty-${realIdx}-${pIdx}`}
                                                   type="number"
                                                   value={pallet.quantityBultos}
                                                   onChange={(e) =>
@@ -1792,13 +1941,16 @@ export default function InventoryPage() {
                                               </div>
 
                                               <div className="sm:col-span-5">
-                                                <label className="block text-slate-400 mb-1">
+                                                <label
+                                                  htmlFor={`pallet-loc-${realIdx}-${pIdx}`}
+                                                  className="block text-slate-400 mb-1"
+                                                >
                                                   Buscar y Asignar Ubicación *
                                                 </label>
                                                 <div className="space-y-1">
                                                   <input
                                                     type="text"
-                                                    placeholder="🔍 Escriba para filtrar (Ej. A37, Rack...)"
+                                                    placeholder="🔍 Escriba para filtrar..."
                                                     value={
                                                       phase2LocationSearches[
                                                         keySearch
@@ -1816,6 +1968,7 @@ export default function InventoryPage() {
                                                     className="w-full bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-xs"
                                                   />
                                                   <select
+                                                    id={`pallet-loc-${realIdx}-${pIdx}`}
                                                     value={pallet.locationId}
                                                     onChange={(e) =>
                                                       handleUpdatePalletItem(
@@ -1852,6 +2005,7 @@ export default function InventoryPage() {
 
                                               <div className="sm:col-span-2 flex gap-1 justify-end">
                                                 <button
+                                                  type="button"
                                                   onClick={() =>
                                                     setPrintModalData({
                                                       productSku: item.sku,
@@ -1881,12 +2035,14 @@ export default function InventoryPage() {
 
                                                 {item.pallets.length > 1 && (
                                                   <button
+                                                    type="button"
                                                     onClick={() =>
                                                       handleRemovePalletFromItem(
                                                         realIdx,
                                                         pIdx,
                                                       )
                                                     }
+                                                    aria-label={`Eliminar Pallet #${pallet.palletIndex}`}
                                                     className="px-2 py-2 bg-red-950 border border-red-800 text-red-400 hover:bg-red-900 rounded font-bold"
                                                   >
                                                     X
@@ -1906,53 +2062,69 @@ export default function InventoryPage() {
                         </div>
 
                         <button
+                          type="button"
                           onClick={handleProcessInboundDischarge}
                           disabled={submitting}
-                          className="w-full py-3.5 bg-amber-500 text-slate-950 font-black rounded-xl text-xs shadow-lg hover:bg-amber-400 transition-colors"
+                          className="w-full py-3.5 bg-amber-500 text-slate-950 font-black rounded-xl text-xs shadow-lg hover:bg-amber-400 transition-colors disabled:opacity-50"
                         >
                           CONFIRMAR DESCARGA E INGRESO AL STOCK
                         </button>
                       </div>
                     )}
                 </div>
-              </div>
+              </section>
             )}
 
+            {/* ------------------------------------------------------------------ */}
             {/* TAB: HISTORIAL */}
+            {/* ------------------------------------------------------------------ */}
             {activeTab === 'HISTORIAL' && (
-              <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
+              <section className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
                 <div className="flex flex-wrap justify-between items-center gap-3 border-b border-slate-800 pb-3">
                   <h2 className="text-base font-bold text-amber-400">
                     Historial de Contenedores e Inbound
                   </h2>
 
                   <div className="flex flex-wrap gap-2">
-                    <input
-                      type="text"
-                      placeholder="Buscar por Contenedor..."
-                      value={historySearchQuery}
-                      onChange={(e) => {
-                        setHistorySearchQuery(e.target.value);
-                        setHistoryPage(1);
-                      }}
-                      className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
-                    />
-                    <input
-                      type="date"
-                      value={historyDateFilter}
-                      onChange={(e) => {
-                        setHistoryDateFilter(e.target.value);
-                        setHistoryPage(1);
-                      }}
-                      className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
-                    />
+                    <div>
+                      <label htmlFor="history-search-input" className="sr-only">
+                        Buscar por Contenedor
+                      </label>
+                      <input
+                        id="history-search-input"
+                        type="text"
+                        placeholder="Buscar por Contenedor..."
+                        value={historySearchQuery}
+                        onChange={(e) => {
+                          setHistorySearchQuery(e.target.value);
+                          setHistoryPage(1);
+                        }}
+                        className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="history-date-filter" className="sr-only">
+                        Filtrar por Fecha
+                      </label>
+                      <input
+                        id="history-date-filter"
+                        type="date"
+                        value={historyDateFilter}
+                        onChange={(e) => {
+                          setHistoryDateFilter(e.target.value);
+                          setHistoryPage(1);
+                        }}
+                        className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                      />
+                    </div>
                     {(historySearchQuery || historyDateFilter) && (
                       <button
+                        type="button"
                         onClick={() => {
                           setHistorySearchQuery('');
                           setHistoryDateFilter('');
                         }}
-                        className="text-xs text-amber-400 font-bold px-2"
+                        className="text-xs text-amber-400 font-bold px-2 hover:underline"
                       >
                         Limpiar Filtros
                       </button>
@@ -1980,7 +2152,8 @@ export default function InventoryPage() {
                             className="p-3 font-mono font-bold text-amber-400 cursor-pointer hover:underline"
                             onClick={() => setSelectedContainerDetail(c)}
                           >
-                            {c.containerNumber} 🔍
+                            {c.containerNumber}{' '}
+                            <span aria-hidden="true">🔍</span>
                           </td>
                           <td className="p-3 font-bold text-white">
                             {c.warehouseName}
@@ -2011,12 +2184,14 @@ export default function InventoryPage() {
                           </td>
                           <td className="p-3 flex gap-2">
                             <button
+                              type="button"
                               onClick={() => setSelectedContainerDetail(c)}
                               className="px-2 py-1 bg-slate-800 text-slate-200 hover:bg-slate-700 rounded text-[10px] font-bold"
                             >
                               Ver Detalle
                             </button>
                             <button
+                              type="button"
                               onClick={() =>
                                 handleDeleteContainer(c.id, c.containerNumber)
                               }
@@ -2039,6 +2214,7 @@ export default function InventoryPage() {
                     </span>
                     <div className="flex gap-1">
                       <button
+                        type="button"
                         disabled={historyPage === 1}
                         onClick={() => setHistoryPage((p) => p - 1)}
                         className="px-3 py-1 bg-slate-800 disabled:opacity-50 text-white rounded font-bold"
@@ -2049,6 +2225,7 @@ export default function InventoryPage() {
                         Pág. {historyPage}
                       </span>
                       <button
+                        type="button"
                         disabled={
                           historyPage * ITEMS_PER_PAGE >=
                           filteredHistoryContainers.length
@@ -2061,27 +2238,35 @@ export default function InventoryPage() {
                     </div>
                   </div>
                 )}
-              </div>
+              </section>
             )}
 
+            {/* ------------------------------------------------------------------ */}
             {/* TAB: STOCK & RÓTULOS */}
+            {/* ------------------------------------------------------------------ */}
             {activeTab === 'STOCK' && (
-              <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
+              <section className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
                 <div className="flex flex-wrap justify-between items-center gap-3 border-b border-slate-800 pb-3">
                   <h2 className="text-base font-bold text-amber-400">
                     Control de Stock e Impresión de Rótulos A4
                   </h2>
 
-                  <input
-                    type="text"
-                    placeholder="🔍 Buscar por SKU o Producto..."
-                    value={stockSearchQuery}
-                    onChange={(e) => {
-                      setStockSearchQuery(e.target.value);
-                      setStockPage(1);
-                    }}
-                    className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-bold w-full sm:w-72"
-                  />
+                  <div>
+                    <label htmlFor="stock-search-input" className="sr-only">
+                      Buscar por SKU o Producto
+                    </label>
+                    <input
+                      id="stock-search-input"
+                      type="text"
+                      placeholder="🔍 Buscar por SKU o Producto..."
+                      value={stockSearchQuery}
+                      onChange={(e) => {
+                        setStockSearchQuery(e.target.value);
+                        setStockPage(1);
+                      }}
+                      className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-bold w-full sm:w-72"
+                    />
+                  </div>
                 </div>
 
                 <div className="space-y-4">
@@ -2110,23 +2295,29 @@ export default function InventoryPage() {
                           </div>
 
                           <button
+                            type="button"
                             onClick={() => {
+                              const firstSource = prod.locations[0];
                               setRelocateItem({
                                 productSku: prod.productSku,
                                 productName: prod.productName,
                                 availableSources: prod.locations,
                               });
                               setSelectedSourceInventoryId(
-                                prod.locations[0]?.inventoryId || '',
+                                firstSource?.inventoryId || '',
                               );
                               setRelocateQuantity(
-                                prod.locations[0]?.quantityBultos || 1,
+                                firstSource?.quantityBultos || 1,
+                              );
+                              setRelocateTargetWarehouseId(
+                                firstSource?.warehouseId || '',
                               );
                               setRelocateTargetLocId('');
                               setRelocateSearchLocQuery('');
-                              if (prod.locations[0]) {
+
+                              if (firstSource) {
                                 loadLocationsForWarehouse(
-                                  prod.locations[0].warehouseId,
+                                  firstSource.warehouseId,
                                 );
                               }
                             }}
@@ -2161,6 +2352,7 @@ export default function InventoryPage() {
                                 </span>
 
                                 <button
+                                  type="button"
                                   onClick={() =>
                                     setPrintModalData({
                                       productSku: prod.productSku,
@@ -2194,6 +2386,7 @@ export default function InventoryPage() {
                     </span>
                     <div className="flex gap-1">
                       <button
+                        type="button"
                         disabled={stockPage === 1}
                         onClick={() => setStockPage((p) => p - 1)}
                         className="px-3 py-1 bg-slate-800 disabled:opacity-50 text-white rounded font-bold"
@@ -2204,6 +2397,7 @@ export default function InventoryPage() {
                         Pág. {stockPage}
                       </span>
                       <button
+                        type="button"
                         disabled={
                           stockPage * ITEMS_PER_PAGE >=
                           filteredConsolidatedStock.length
@@ -2216,28 +2410,37 @@ export default function InventoryPage() {
                     </div>
                   </div>
                 )}
-              </div>
+              </section>
             )}
 
+            {/* ------------------------------------------------------------------ */}
             {/* TAB: CONFIGURACIÓN Y MANTENIMIENTO MASIVO */}
+            {/* ------------------------------------------------------------------ */}
             {activeTab === 'CONFIG' && (
-              <div className="space-y-6">
+              <section className="space-y-6">
                 <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
                   <h2 className="text-base font-bold text-amber-400 border-b border-slate-800 pb-2 mb-4">
                     Alta Nuevo Depósito
                   </h2>
                   <div className="flex gap-3">
-                    <input
-                      type="text"
-                      value={newWhName}
-                      onChange={(e) => setNewWhName(e.target.value)}
-                      placeholder="Nombre del Depósito..."
-                      className="flex-1 bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white"
-                    />
+                    <div className="flex-1">
+                      <label htmlFor="new-wh-name-input" className="sr-only">
+                        Nombre del Depósito
+                      </label>
+                      <input
+                        id="new-wh-name-input"
+                        type="text"
+                        value={newWhName}
+                        onChange={(e) => setNewWhName(e.target.value)}
+                        placeholder="Nombre del Depósito..."
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white"
+                      />
+                    </div>
                     <button
+                      type="button"
                       onClick={handleCreateWarehouse}
                       disabled={submitting}
-                      className="px-5 py-3 bg-amber-500 text-slate-950 font-black rounded-xl text-xs"
+                      className="px-5 py-3 bg-amber-500 text-slate-950 font-black rounded-xl text-xs disabled:opacity-50"
                     >
                       + CREAR DEPÓSITO
                     </button>
@@ -2245,16 +2448,21 @@ export default function InventoryPage() {
                 </div>
 
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* GENERADOR POR RANGOS */}
                   <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
                     <h2 className="text-base font-bold text-amber-400 border-b border-slate-800 pb-2">
                       Generador Inteligente por Rangos
                     </h2>
 
                     <div>
-                      <label className="block text-xs text-slate-300 mb-1">
+                      <label
+                        htmlFor="gen-target-wh-select"
+                        className="block text-xs text-slate-300 mb-1"
+                      >
                         Depósito Destino *
                       </label>
                       <select
+                        id="gen-target-wh-select"
                         value={targetConfigWhId}
                         onChange={(e) => setTargetConfigWhId(e.target.value)}
                         className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white font-bold"
@@ -2269,10 +2477,14 @@ export default function InventoryPage() {
 
                     <div className="grid grid-cols-2 gap-3 text-xs">
                       <div>
-                        <label className="block text-slate-400 mb-1">
+                        <label
+                          htmlFor="gen-category-select"
+                          className="block text-slate-400 mb-1"
+                        >
                           Estructura
                         </label>
                         <select
+                          id="gen-category-select"
                           value={genCategory}
                           onChange={(e) =>
                             setGenCategory(
@@ -2288,10 +2500,14 @@ export default function InventoryPage() {
                       </div>
 
                       <div>
-                        <label className="block text-slate-400 mb-1">
-                          Capacidad m3 por Ubicación
+                        <label
+                          htmlFor="gen-capacity-input"
+                          className="block text-slate-400 mb-1"
+                        >
+                          Capacidad m³ por Ubicación
                         </label>
                         <input
+                          id="gen-capacity-input"
                           type="number"
                           step="0.5"
                           value={genCapacityM3}
@@ -2304,10 +2520,14 @@ export default function InventoryPage() {
                     </div>
 
                     <div>
-                      <label className="block text-xs text-slate-400 mb-1">
+                      <label
+                        htmlFor="gen-area-name-input"
+                        className="block text-xs text-slate-400 mb-1"
+                      >
                         Nombre del Área / Rack
                       </label>
                       <input
+                        id="gen-area-name-input"
                         type="text"
                         value={genAreaName}
                         onChange={(e) => setGenAreaName(e.target.value)}
@@ -2317,10 +2537,14 @@ export default function InventoryPage() {
 
                     <div className="grid grid-cols-2 gap-3 text-xs">
                       <div>
-                        <label className="block text-slate-400 mb-1">
+                        <label
+                          htmlFor="gen-levels-input"
+                          className="block text-slate-400 mb-1"
+                        >
                           Niveles (Comas)
                         </label>
                         <input
+                          id="gen-levels-input"
                           type="text"
                           value={genLevelsInput}
                           onChange={(e) => setGenLevelsInput(e.target.value)}
@@ -2329,11 +2553,12 @@ export default function InventoryPage() {
                       </div>
 
                       <div>
-                        <label className="block text-slate-400 mb-1">
-                          Rangos
-                        </label>
+                        <span className="block text-slate-400 mb-1">
+                          Rangos (Inicio - Fin)
+                        </span>
                         <div className="flex gap-2">
                           <input
+                            aria-label="Posición de Inicio"
                             type="number"
                             value={genPosStart}
                             onChange={(e) =>
@@ -2342,6 +2567,7 @@ export default function InventoryPage() {
                             className="w-1/2 bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-white font-bold text-center"
                           />
                           <input
+                            aria-label="Posición de Fin"
                             type="number"
                             value={genPosEnd}
                             onChange={(e) =>
@@ -2354,14 +2580,16 @@ export default function InventoryPage() {
                     </div>
 
                     <button
+                      type="button"
                       onClick={handleGenerateBatch}
                       disabled={submitting}
-                      className="w-full py-3.5 bg-amber-500 text-slate-950 font-black rounded-xl text-xs"
+                      className="w-full py-3.5 bg-amber-500 text-slate-950 font-black rounded-xl text-xs disabled:opacity-50"
                     >
                       GENERAR LOTE DE UBICACIONES
                     </button>
                   </div>
 
+                  {/* MANTENIMIENTO MASIVO */}
                   <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4 flex flex-col justify-between">
                     <div className="space-y-4">
                       <div className="flex justify-between items-center border-b border-slate-800 pb-2">
@@ -2369,6 +2597,7 @@ export default function InventoryPage() {
                           Mantenimiento Masivo
                         </h2>
                         <button
+                          type="button"
                           onClick={handleDeleteFullWarehouse}
                           className="px-2.5 py-1 bg-red-950 border border-red-800 text-red-400 hover:bg-red-900 rounded text-[11px] font-bold"
                         >
@@ -2378,10 +2607,14 @@ export default function InventoryPage() {
 
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                         <div>
-                          <label className="block text-slate-400 mb-1 font-bold">
+                          <label
+                            htmlFor="filter-maint-wh-select"
+                            className="block text-slate-400 mb-1 font-bold"
+                          >
                             1. Filtrar Depósito
                           </label>
                           <select
+                            id="filter-maint-wh-select"
                             value={targetConfigWhId}
                             onChange={(e) =>
                               setTargetConfigWhId(e.target.value)
@@ -2397,10 +2630,14 @@ export default function InventoryPage() {
                         </div>
 
                         <div>
-                          <label className="block text-slate-400 mb-1 font-bold">
+                          <label
+                            htmlFor="filter-maint-area-select"
+                            className="block text-slate-400 mb-1 font-bold"
+                          >
                             2. Filtrar Bloque / Área
                           </label>
                           <select
+                            id="filter-maint-area-select"
                             value={selectedAreaFilter}
                             onChange={(e) => {
                               setSelectedAreaFilter(e.target.value);
@@ -2427,6 +2664,7 @@ export default function InventoryPage() {
 
                       <div className="flex justify-between items-center text-xs pt-2 border-t border-slate-800">
                         <button
+                          type="button"
                           onClick={handleToggleSelectAllLocations}
                           className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold rounded-lg border border-slate-700"
                         >
@@ -2470,6 +2708,7 @@ export default function InventoryPage() {
                                   type="checkbox"
                                   checked={isSelected}
                                   onChange={() => {}}
+                                  aria-label={`Seleccionar ubicación ${loc.code}`}
                                   className="accent-red-500 w-4 h-4"
                                 />
                                 <div>
@@ -2483,10 +2722,14 @@ export default function InventoryPage() {
                               </div>
 
                               <div className="flex items-center gap-2">
-                                <span className="text-[10px] text-slate-400 font-bold">
+                                <label
+                                  htmlFor={`cap-input-${loc.id}`}
+                                  className="text-[10px] text-slate-400 font-bold"
+                                >
                                   Capacidad m³:
-                                </span>
+                                </label>
                                 <input
+                                  id={`cap-input-${loc.id}`}
                                   type="number"
                                   step="0.5"
                                   defaultValue={loc.maxCapacityM3}
@@ -2510,6 +2753,7 @@ export default function InventoryPage() {
                           </span>
                           <div className="flex gap-1">
                             <button
+                              type="button"
                               disabled={configPage === 1}
                               onClick={() => setConfigPage((p) => p - 1)}
                               className="px-2 py-1 bg-slate-800 text-white rounded font-bold disabled:opacity-50"
@@ -2517,6 +2761,7 @@ export default function InventoryPage() {
                               Prev
                             </button>
                             <button
+                              type="button"
                               disabled={
                                 configPage * ITEMS_PER_PAGE >=
                                 visibleLocationsInMaintenance.length
@@ -2533,9 +2778,10 @@ export default function InventoryPage() {
 
                     {selectedLocIdsForDelete.length > 0 && (
                       <button
+                        type="button"
                         onClick={handleDeleteSelectedLocations}
                         disabled={submitting}
-                        className="w-full py-3 bg-red-600 text-white font-black rounded-xl text-xs shadow-lg mt-4"
+                        className="w-full py-3 bg-red-600 text-white font-black rounded-xl text-xs shadow-lg mt-4 disabled:opacity-50"
                       >
                         ELIMINAR {selectedLocIdsForDelete.length} POSICIONES
                         SELECCIONADAS
@@ -2543,21 +2789,31 @@ export default function InventoryPage() {
                     )}
                   </div>
                 </div>
-              </div>
+              </section>
             )}
           </>
         )}
 
+        {/* ------------------------------------------------------------------ */}
         {/* MODAL DETALLE DE CONTENEDOR AUDITADO */}
+        {/* ------------------------------------------------------------------ */}
         {selectedContainerDetail && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="modal-container-title"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+          >
             <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-3xl overflow-hidden shadow-2xl p-6 space-y-4">
               <div className="flex justify-between items-center border-b border-slate-800 pb-3">
                 <div>
-                  <h3 className="text-lg font-black text-amber-400">
+                  <h2
+                    id="modal-container-title"
+                    className="text-lg font-black text-amber-400"
+                  >
                     Detalle del Contenedor:{' '}
                     {selectedContainerDetail.containerNumber}
-                  </h3>
+                  </h2>
                   <p className="text-xs text-slate-400">
                     Depósito: {selectedContainerDetail.warehouseName} | Arribo:{' '}
                     {new Date(
@@ -2566,8 +2822,9 @@ export default function InventoryPage() {
                   </p>
                 </div>
                 <button
+                  type="button"
                   onClick={() => setSelectedContainerDetail(null)}
-                  className="px-3 py-1 bg-slate-800 text-slate-300 font-bold rounded-lg text-xs"
+                  className="px-3 py-1 bg-slate-800 text-slate-300 font-bold rounded-lg text-xs hover:bg-slate-700"
                 >
                   Cerrar
                 </button>
@@ -2619,13 +2876,23 @@ export default function InventoryPage() {
           </div>
         )}
 
+        {/* ------------------------------------------------------------------ */}
         {/* MODAL MUDANZA / REUBICACIÓN DE PALLETS */}
+        {/* ------------------------------------------------------------------ */}
         {relocateItem && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="modal-relocate-title"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+          >
             <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 space-y-4">
-              <h3 className="text-base font-black text-amber-400 border-b border-slate-800 pb-2">
+              <h2
+                id="modal-relocate-title"
+                className="text-base font-black text-amber-400 border-b border-slate-800 pb-2"
+              >
                 Reubicar Pallet / Mover Stock
-              </h3>
+              </h2>
 
               <div className="text-xs space-y-1 bg-slate-950 p-3 rounded-xl border border-slate-800">
                 <p className="text-white font-bold">
@@ -2638,18 +2905,25 @@ export default function InventoryPage() {
 
               <div className="space-y-3 text-xs">
                 <div>
-                  <label className="block text-slate-300 mb-1">
+                  <label
+                    htmlFor="source-inventory-select"
+                    className="block text-slate-300 mb-1 font-bold"
+                  >
                     1. Seleccionar Posición Origen *
                   </label>
                   <select
+                    id="source-inventory-select"
                     value={selectedSourceInventoryId}
                     onChange={(e) => {
-                      setSelectedSourceInventoryId(e.target.value);
+                      const selectedInvId = e.target.value;
+                      setSelectedSourceInventoryId(selectedInvId);
                       const selected = relocateItem.availableSources.find(
-                        (s) => s.inventoryId === e.target.value,
+                        (s) => s.inventoryId === selectedInvId,
                       );
                       if (selected) {
                         setRelocateQuantity(selected.quantityBultos);
+                        setRelocateTargetWarehouseId(selected.warehouseId);
+                        setRelocateTargetLocId('');
                         loadLocationsForWarehouse(selected.warehouseId);
                       }
                     }}
@@ -2658,17 +2932,21 @@ export default function InventoryPage() {
                     {relocateItem.availableSources.map((s) => (
                       <option key={s.inventoryId} value={s.inventoryId}>
                         {s.locationCode} ({s.warehouseName}) -{' '}
-                        {s.quantityBultos} bultos disponibles
+                        {s.quantityBultos} bu
                       </option>
                     ))}
                   </select>
                 </div>
 
                 <div>
-                  <label className="block text-slate-300 mb-1">
+                  <label
+                    htmlFor="relocate-quantity-input"
+                    className="block text-slate-300 mb-1 font-bold"
+                  >
                     2. Cantidad de Bultos a Mover *
                   </label>
                   <input
+                    id="relocate-quantity-input"
                     type="number"
                     min={1}
                     value={relocateQuantity}
@@ -2680,23 +2958,57 @@ export default function InventoryPage() {
                 </div>
 
                 <div>
-                  <label className="block text-slate-300 mb-1">
-                    3. Buscar y Seleccionar Posición Destino *
+                  <label
+                    htmlFor="relocate-target-warehouse-select"
+                    className="block text-slate-300 mb-1 font-bold"
+                  >
+                    3. Depósito Destino *
+                  </label>
+                  <select
+                    id="relocate-target-warehouse-select"
+                    value={relocateTargetWarehouseId}
+                    onChange={(e) => {
+                      const newWhId = e.target.value;
+                      setRelocateTargetWarehouseId(newWhId);
+                      setRelocateTargetLocId('');
+                      setRelocateSearchLocQuery('');
+                      loadLocationsForWarehouse(newWhId);
+                    }}
+                    className="w-full bg-slate-950 border border-amber-500/50 rounded-xl p-3 text-sm text-amber-300 font-bold"
+                  >
+                    {simpleWarehousesList.map((wh) => (
+                      <option key={wh.id} value={wh.id}>
+                        {wh.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="relocate-target-select"
+                    className="block text-slate-300 mb-1 font-bold"
+                  >
+                    4. Buscar y Seleccionar Posición Destino *
                   </label>
                   <input
                     type="text"
-                    placeholder="🔍 Escriba la ubicación destino (Ej. Chile 1, B30...)"
+                    placeholder="🔍 Buscar por código (ej. b4, rack-2)..."
                     value={relocateSearchLocQuery}
                     onChange={(e) => setRelocateSearchLocQuery(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white mb-2"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white mb-2 font-mono"
                   />
 
                   <select
+                    id="relocate-target-select"
                     value={relocateTargetLocId}
                     onChange={(e) => setRelocateTargetLocId(e.target.value)}
                     className="w-full bg-slate-950 border border-amber-500/50 rounded-xl p-3 text-sm text-white font-bold"
                   >
-                    <option value="">-- Seleccionar Posición Destino --</option>
+                    <option value="">
+                      -- Seleccionar Posición Destino (
+                      {filteredRelocateLocations.length} disponibles) --
+                    </option>
                     {filteredRelocateLocations.map((loc) => (
                       <option key={loc.id} value={loc.id}>
                         {loc.code} ({loc.zoneName})
@@ -2708,15 +3020,17 @@ export default function InventoryPage() {
 
               <div className="flex gap-2 pt-2">
                 <button
+                  type="button"
                   onClick={handleConfirmRelocation}
                   disabled={submitting}
-                  className="flex-1 py-3 bg-amber-500 text-slate-950 font-black rounded-xl text-xs hover:bg-amber-400"
+                  className="flex-1 py-3 bg-amber-500 text-slate-950 font-black rounded-xl text-xs hover:bg-amber-400 disabled:opacity-50"
                 >
                   CONFIRMAR REUBICACIÓN
                 </button>
                 <button
+                  type="button"
                   onClick={() => setRelocateItem(null)}
-                  className="px-4 py-3 bg-slate-800 text-slate-300 font-bold rounded-xl text-xs"
+                  className="px-4 py-3 bg-slate-800 text-slate-300 font-bold rounded-xl text-xs hover:bg-slate-700"
                 >
                   Cancelar
                 </button>
@@ -2725,12 +3039,14 @@ export default function InventoryPage() {
           </div>
         )}
 
+        {/* ------------------------------------------------------------------ */}
         {/* MODAL RÓTULO A4 */}
+        {/* ------------------------------------------------------------------ */}
         <PalletLabelModal
           data={printModalData}
           onClose={() => setPrintModalData(null)}
         />
-      </div>
+      </main>
     </ProtectedRoute>
   );
 }

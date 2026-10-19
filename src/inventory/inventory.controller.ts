@@ -43,7 +43,18 @@ export class InventoryController {
   }
 
   @Post('locations/batch')
-  generateBatchLocations(@Body() dto: any) {
+  generateBatchLocations(
+    @Body()
+    dto: {
+      warehouseId: string;
+      category: 'RACK' | 'PASILLO' | 'TECHO';
+      areaName: string;
+      levels: string[];
+      positionStart: number;
+      positionEnd: number;
+      maxCapacityM3PerUnit: number | string;
+    },
+  ) {
     return this.inventoryService.generateLocationsBatch(dto);
   }
 
