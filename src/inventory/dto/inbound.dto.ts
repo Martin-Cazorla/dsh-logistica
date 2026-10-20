@@ -1,91 +1,96 @@
-// src/inventory/dto/inbound.dto.ts
+// dsh-logistica/src/inventory/dto/inbound.dto.ts
 
 import {
   IsString,
-  IsNotEmpty,
-  IsOptional,
   IsNumber,
+  IsOptional,
   IsArray,
   ValidateNested,
+  IsBoolean,
+  Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
-export class CreateWarehouseDto {
+export class ComboComponentDto {
   @IsString()
-  @IsNotEmpty({ message: 'El nombre del depósito es obligatorio.' })
-  name: string;
+  childSku: string;
 
   @IsString()
-  @IsOptional()
-  code?: string;
+  description: string;
 
-  @IsString()
-  @IsOptional()
-  address?: string;
+  @IsNumber()
+  @Min(1)
+  quantityPerCombo: number;
 }
 
 export class InboundItemDto {
   @IsString()
-  @IsNotEmpty()
   productSku: string;
 
   @IsString()
-  @IsNotEmpty()
   productName: string;
 
-  @IsString()
-  @IsOptional()
-  eanCode?: string;
-
   @IsNumber()
+  @Min(1)
   quantityBultos: number;
 
-  @IsNumber()
   @IsOptional()
+  @IsNumber()
   unitsPerBox?: number;
 
-  @IsNumber()
-  weightPerBultoKg: number;
-
-  @IsNumber()
   @IsOptional()
-  lengthCm?: number;
-
   @IsNumber()
+  weightPerBultoKg?: number;
+
   @IsOptional()
-  widthCm?: number;
-
   @IsNumber()
+  volumePerBultoM3?: number;
+
   @IsOptional()
-  heightCm?: number;
-
   @IsNumber()
-  volumePerBultoM3: number;
-
-  @IsNumber()
-  @IsOptional()
   sampleUnits?: number;
 
-  @IsString()
   @IsOptional()
+  @IsString()
   notes?: string;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  locationId: string;
+  locationId?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isCombo?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ComboComponentDto)
+  components?: ComboComponentDto[];
 }
 
 export class InboundDto {
   @IsString()
-  @IsNotEmpty()
-  warehouseId: string;
+  containerNumber: string;
 
   @IsString()
-  @IsOptional()
-  containerNumber?: string;
+  warehouseId: string;
 
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => InboundItemDto)
   items: InboundItemDto[];
+}
+
+export class CreateWarehouseDto {
+  @IsString()
+  name: string;
+
+  @IsOptional()
+  @IsString()
+  code?: string;
+
+  @IsOptional()
+  @IsString()
+  address?: string;
 }

@@ -170,11 +170,30 @@ model Product {
     movements      StockMovement[]
     containerItems InboundContainerItem[]
 
+    // Relación de Combos (Padre / Hijo)
+    comboParentItems ComboComponent[] @relation("ParentProduct")
+    comboChildItems  ComboComponent[] @relation("ChildProduct")
+
     createdAt DateTime @default(now()) @map("created_at")
     updatedAt DateTime @updatedAt @map("updated_at")
 
     @@index([barcode])
     @@map("products")
+}
+
+model ComboComponent {
+    id               String @id @default(uuid()) @db.Uuid
+    parentProductId  String @map("parent_product_id") @db.Uuid
+    childProductId   String @map("child_product_id") @db.Uuid
+    quantityPerCombo Int    @default(1) @map("quantity_per_combo")
+
+    parentProduct Product @relation("ParentProduct", fields: [parentProductId], references: [id], onDelete: Cascade)
+    childProduct  Product @relation("ChildProduct", fields: [childProductId], references: [id], onDelete: Cascade)
+
+    createdAt DateTime @default(now()) @map("created_at")
+
+    @@unique([parentProductId, childProductId])
+    @@map("combo_components")
 }
 
 model Inventory {
@@ -261,6 +280,7 @@ model InboundContainerItem {
     sampleUnits      Int     @default(0) @map("sample_units")
     imageUrl         String? @map("image_url") @db.VarChar(255)
     notes            String? @db.Text
+    rawComponents    Json?   @map("raw_components")
 
     // Trazabilidad de Auditoría
     isControlled   Boolean   @default(false) @map("is_controlled")

@@ -4,6 +4,13 @@ export type LocationTypeCategory = 'RACK' | 'PASILLO' | 'TECHO';
 export type LocationStatus =
   'DISPONIBLE' | 'PARCIAL' | 'COMPLETO' | 'SOBREEXIGIDO';
 
+// Estructura para componentes de combos (SKU Hijo)
+export interface ComboComponent {
+  childSku: string;
+  description: string;
+  quantityPerCombo: number;
+}
+
 export interface PhysicalLocation {
   id: string;
   warehouseId: string;
@@ -53,6 +60,8 @@ export interface InventoryStock {
   heightCm?: number;
   totalWeightKg: number;
   totalVolumeM3: number;
+  isCombo?: boolean;
+  components?: ComboComponent[];
   updatedAt: string;
 }
 
@@ -78,6 +87,8 @@ export interface PackingListItem {
   rackLevel?: string;
   moduleNumber?: number;
   locationId?: string;
+  isCombo?: boolean;
+  components?: ComboComponent[];
 }
 
 export interface ReceiveContainerDto {
@@ -97,6 +108,7 @@ export interface ReceiveContainerDto {
     sampleUnits?: number;
     notes?: string;
     locationId: string;
+    parentSku?: string;
   }[];
 }
 
@@ -162,6 +174,7 @@ export interface ManualStockItem {
   weightPerBultoKg?: number;
   volumePerBultoM3?: number;
   notes?: string;
+  parentSku?: string;
 }
 
 export interface CreateManualStockDto {

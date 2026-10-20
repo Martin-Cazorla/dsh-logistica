@@ -287,15 +287,32 @@ export class InventoryService {
     const inventories = await this.prisma.inventory.findMany({
       where: whereClause,
       include: {
-        product: true,
+        product: {
+          include: {
+            comboParentItems: {
+              include: {
+                childProduct: true,
+              },
+            },
+          },
+        },
         warehouse: true,
         location: true,
       },
     });
 
-    return inventories.map((inv) => {
+    return inventories.map((inv: any) => {
       const weightKg = inv.product?.weightKg ? Number(inv.product.weightKg) : 0;
       const volumeM3 = inv.product?.volumeM3 ? Number(inv.product.volumeM3) : 0;
+
+      const rawComponents = inv.product?.comboParentItems || [];
+      const componentsList = Array.isArray(rawComponents)
+        ? rawComponents.map((c: any) => ({
+            childSku: c.childProduct?.sku || c.childSku || '',
+            description: c.childProduct?.name || c.description || '',
+            quantityPerCombo: Number(c.quantityPerCombo || 1),
+          }))
+        : [];
 
       return {
         id: inv.id,
@@ -314,6 +331,8 @@ export class InventoryService {
         volumePerBultoM3: volumeM3,
         totalWeightKg: inv.quantity * weightKg,
         totalVolumeM3: Number((inv.quantity * volumeM3).toFixed(3)),
+        isCombo: componentsList.length > 0,
+        components: componentsList,
         updatedAt: inv.updatedAt,
       };
     });
@@ -333,7 +352,7 @@ export class InventoryService {
         warehouseId,
         status: 'PENDIENTE',
         items: {
-          create: items.map((item) => ({
+          create: items.map((item: any) => ({
             sku: item.productSku,
             description: item.productName,
             quantityBultos: item.quantityBultos,
@@ -344,6 +363,8 @@ export class InventoryService {
             sampleUnits: item.sampleUnits || 0,
             notes: item.notes || null,
             locationId: item.locationId || null,
+            rawComponents:
+              item.isCombo && item.components ? item.components : null,
           })),
         },
       },
@@ -371,6 +392,25 @@ export class InventoryService {
       orderBy: { createdAt: 'desc' },
     });
 
+    const allSkus = new Set<string>();
+    containers.forEach((c: any) => {
+      c.items.forEach((i: any) => allSkus.add(i.sku));
+    });
+
+    const productsWithComponents = await this.prisma.product.findMany({
+      where: { sku: { in: Array.from(allSkus) } },
+      include: {
+        comboParentItems: {
+          include: {
+            childProduct: true,
+          },
+        },
+      },
+    });
+
+    const productMap = new Map<string, any>();
+    productsWithComponents.forEach((p: any) => productMap.set(p.sku, p));
+
     return containers.map((c: any) => ({
       id: c.id,
       containerNumber: c.containerNumber,
@@ -387,22 +427,46 @@ export class InventoryService {
         (acc: number, i: ContainerItemSum) => acc + i.totalUnits,
         0,
       ),
-      items: c.items.map((i: any) => ({
-        id: i.id,
-        sku: i.sku,
-        description: i.description,
-        quantityBultos: i.quantityBultos,
-        unitsPerBox: i.unitsPerBox,
-        totalUnits: i.totalUnits,
-        weightPerBultoKg: Number(i.weightPerBultoKg || 0),
-        volumePerBultoM3: Number(i.volumePerBultoM3 || 0),
-        locationId: i.locationId,
-        isControlled: i.isControlled,
-        controlledBy: i.controlledBy
-          ? `${i.controlledBy.firstName} ${i.controlledBy.lastName}`
-          : null,
-        controlledAt: i.controlledAt,
-      })),
+      items: c.items.map((i: any) => {
+        const prod = productMap.get(i.sku);
+        const dbComponents = prod?.comboParentItems || [];
+
+        let componentsList: any[] = [];
+        if (i.rawComponents && Array.isArray(i.rawComponents)) {
+          componentsList = i.rawComponents.map((comp: any) => ({
+            childSku: comp.childSku || comp.sku || '',
+            description: comp.description || '',
+            quantityPerCombo: Number(
+              comp.quantityPerCombo || comp.quantity || 1,
+            ),
+          }));
+        } else if (dbComponents.length > 0) {
+          componentsList = dbComponents.map((comp: any) => ({
+            childSku: comp.childProduct?.sku || '',
+            description: comp.childProduct?.name || '',
+            quantityPerCombo: Number(comp.quantityPerCombo || 1),
+          }));
+        }
+
+        return {
+          id: i.id,
+          sku: i.sku,
+          description: i.description,
+          quantityBultos: i.quantityBultos,
+          unitsPerBox: i.unitsPerBox,
+          totalUnits: i.totalUnits,
+          weightPerBultoKg: Number(i.weightPerBultoKg || 0),
+          volumePerBultoM3: Number(i.volumePerBultoM3 || 0),
+          locationId: i.locationId,
+          isControlled: i.isControlled,
+          controlledBy: i.controlledBy
+            ? `${i.controlledBy.firstName} ${i.controlledBy.lastName}`
+            : null,
+          controlledAt: i.controlledAt,
+          isCombo: componentsList.length > 0,
+          components: componentsList,
+        };
+      }),
     }));
   }
 
@@ -475,6 +539,46 @@ export class InventoryService {
               volumeM3: item.volumePerBultoM3,
             },
           });
+        } else {
+          product = await tx.product.update({
+            where: { id: product.id },
+            data: {
+              unitsPerBox: item.unitsPerBox || product.unitsPerBox,
+              weightKg: item.weightPerBultoKg || product.weightKg,
+              volumeM3: item.volumePerBultoM3 || product.volumeM3,
+            },
+          });
+        }
+
+        if (item.parentSku && item.parentSku !== item.sku) {
+          let parentProduct = await tx.product.findUnique({
+            where: { sku: item.parentSku },
+          });
+
+          if (!parentProduct) {
+            parentProduct = await tx.product.create({
+              data: {
+                sku: item.parentSku,
+                name: `Combo ${item.parentSku}`,
+                unitsPerBox: 1,
+              },
+            });
+          }
+
+          await tx.comboComponent.upsert({
+            where: {
+              parentProductId_childProductId: {
+                parentProductId: parentProduct.id,
+                childProductId: product.id,
+              },
+            },
+            update: {},
+            create: {
+              parentProductId: parentProduct.id,
+              childProductId: product.id,
+              quantityPerCombo: 1,
+            },
+          });
         }
 
         const effectiveWarehouseId = item.warehouseId || container.warehouseId;
@@ -511,6 +615,7 @@ export class InventoryService {
           data: {
             productId: product.id,
             warehouseId: effectiveWarehouseId,
+            targetLocationId: item.locationId,
             userId: activeUser.id,
             type: 'INBOUND',
             quantity: item.quantityBultos,
@@ -747,7 +852,7 @@ export class InventoryService {
       },
     });
 
-    return inventories.map((inv) => ({
+    return inventories.map((inv: any) => ({
       id: inv.id,
       productId: inv.productId,
       productSku: inv.product?.sku || 'S/SKU',

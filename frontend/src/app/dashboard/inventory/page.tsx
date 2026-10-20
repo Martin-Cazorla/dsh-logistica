@@ -14,16 +14,27 @@ import {
   PhysicalLocation,
   LocationTypeCategory,
   PalletLabelData,
+  ComboComponent,
 } from '@/types/inventory.types';
 
-// Interfaces locales para robustecer el tipado
-interface PhysicalControlPallet {
+// ---------------------------------------------------------------------------
+// INTERFACES LOCALES
+// ---------------------------------------------------------------------------
+
+export interface PhysicalControlPallet {
   palletIndex: number;
   quantityBultos: number;
+  unitsPerBox: number;
+  lengthCm: number;
+  widthCm: number;
+  heightCm: number;
+  weightPerBultoKg: number;
+  volumePerBultoM3: number;
   locationId: string;
+  childSku?: string;
 }
 
-interface PhysicalControlItem {
+export interface PhysicalControlItem {
   id?: string;
   sku: string;
   description: string;
@@ -38,10 +49,13 @@ interface PhysicalControlItem {
   sampleUnitsCount: number;
   isChecked: boolean;
   controlledBy: string | null;
+  isCombo?: boolean;
+  components?: ComboComponent[];
   pallets: PhysicalControlPallet[];
+  isOmitted?: boolean; // Marca si el producto faltó totalmente (0 bultos)
 }
 
-interface ContainerHistoryItem {
+export interface ContainerHistoryItem {
   id: string;
   containerNumber: string;
   warehouseId: string;
@@ -58,6 +72,8 @@ interface ContainerHistoryItem {
     isControlled: boolean;
     controlledBy?: string | null;
     controlledAt?: string | null;
+    isCombo?: boolean;
+    components?: ComboComponent[];
   }>;
 }
 
@@ -104,7 +120,6 @@ export default function InventoryPage() {
   // ---------------------------------------------------------------------------
   // ESTADOS: TAB 2 - CONTROL MÓVIL Y PRE-CARGA (FASE 1 Y FASE 2)
   // ---------------------------------------------------------------------------
-  // Fase 1: Pre-carga de Packing List
   const [containerNumber, setContainerNumber] = useState<string>('');
   const [packingList, setPackingList] = useState<PackingListItem[]>([
     {
@@ -126,6 +141,8 @@ export default function InventoryPage() {
       rackLevel: 'A',
       moduleNumber: 1,
       locationId: '',
+      isCombo: false,
+      components: [],
     },
   ]);
 
@@ -140,12 +157,10 @@ export default function InventoryPage() {
     PhysicalControlItem[]
   >([]);
 
-  // Búsqueda rápida de ubicaciones dentro de ítems en Fase 2
   const [phase2LocationSearches, setPhase2LocationSearches] = useState<
     Record<string, string>
   >({});
 
-  // Filtros, Acordeón y Sockets en tiempo real
   const [phase2SearchTerm, setPhase2SearchTerm] = useState<string>('');
   const [phase2Tab, setPhase2Tab] = useState<'PENDIENTES' | 'CONTROLADOS'>(
     'PENDIENTES',
@@ -156,7 +171,6 @@ export default function InventoryPage() {
   >({});
   const [socket, setSocket] = useState<Socket | null>(null);
 
-  // Usuario activo en sesión
   const [currentUser] = useState({
     id: 'usr-operario-1',
     name: 'Martín Cazorla',
@@ -359,6 +373,9 @@ export default function InventoryPage() {
     }
   }, [targetConfigWhId, loadLocationsForWarehouse]);
 
+  // ---------------------------------------------------------------------------
+  // EFECTO: CARGA DE ÍTEMS Y ASIGNACIÓN DE DEPÓSITO AL SELECCIONAR CONTENEDOR
+  // ---------------------------------------------------------------------------
   useEffect(() => {
     if (selectedPendingContainerId) {
       if (socket) {
@@ -369,15 +386,56 @@ export default function InventoryPage() {
         (c) => c.id === selectedPendingContainerId,
       );
       if (container) {
-        const initialWhId =
-          container.warehouseId || simpleWarehousesList[0]?.id || '';
-        setDischargeWarehouseId(initialWhId);
+        setDischargeWarehouseId((prev) => {
+          if (prev && simpleWarehousesList.some((w) => w.id === prev)) {
+            return prev;
+          }
+          return container.warehouseId || simpleWarehousesList[0]?.id || '';
+        });
 
         if (container.items) {
           const defaultLoc = locations[0]?.id || '';
           setPhysicalControlItems(
             container.items.map((i) => {
               const qtyBultos = i.quantityBultos || 1;
+              const componentsList = i.components || [];
+              const hasComponents = componentsList.length > 0;
+              const isCombo = Boolean(i.isCombo || hasComponents);
+
+              let initialPallets: PhysicalControlPallet[] = [];
+
+              if (hasComponents) {
+                componentsList.forEach((comp) => {
+                  const compTotalBultos = qtyBultos * comp.quantityPerCombo;
+                  initialPallets.push({
+                    palletIndex: initialPallets.length + 1,
+                    quantityBultos: compTotalBultos,
+                    unitsPerBox: 1,
+                    lengthCm: 40,
+                    widthCm: 30,
+                    heightCm: 30,
+                    weightPerBultoKg: 10,
+                    volumePerBultoM3: 0.036,
+                    locationId: defaultLoc,
+                    childSku: comp.childSku,
+                  });
+                });
+              } else {
+                initialPallets = [
+                  {
+                    palletIndex: 1,
+                    quantityBultos: qtyBultos,
+                    unitsPerBox: 1,
+                    lengthCm: 40,
+                    widthCm: 30,
+                    heightCm: 30,
+                    weightPerBultoKg: 10,
+                    volumePerBultoM3: 0.036,
+                    locationId: defaultLoc,
+                  },
+                ];
+              }
+
               return {
                 sku: i.sku || '',
                 description: i.description || '',
@@ -392,13 +450,10 @@ export default function InventoryPage() {
                 sampleUnitsCount: 0,
                 isChecked: Boolean(i.isControlled),
                 controlledBy: i.controlledBy || null,
-                pallets: [
-                  {
-                    palletIndex: 1,
-                    quantityBultos: qtyBultos,
-                    locationId: defaultLoc,
-                  },
-                ],
+                isCombo,
+                components: componentsList,
+                pallets: initialPallets,
+                isOmitted: false,
               };
             }),
           );
@@ -409,13 +464,8 @@ export default function InventoryPage() {
       setPhysicalControlItems([]);
       setExpandedItemSkus([]);
     }
-  }, [
-    selectedPendingContainerId,
-    containersHistory,
-    simpleWarehousesList,
-    socket,
-    locations,
-  ]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPendingContainerId, containersHistory, socket]);
 
   useEffect(() => {
     if (locations.length > 0 && physicalControlItems.length > 0) {
@@ -579,7 +629,13 @@ export default function InventoryPage() {
       const matchesSearch =
         !query ||
         item.sku.toLowerCase().includes(query) ||
-        item.description.toLowerCase().includes(query);
+        item.description.toLowerCase().includes(query) ||
+        (item.components &&
+          item.components.some(
+            (c) =>
+              c.childSku.toLowerCase().includes(query) ||
+              c.description.toLowerCase().includes(query),
+          ));
 
       return matchesTab && matchesSearch;
     });
@@ -634,7 +690,62 @@ export default function InventoryPage() {
   ) => {
     setPackingList((prev) => {
       const updated = [...prev];
-      updated[index] = { ...updated[index], [field]: value };
+      const item = { ...updated[index], [field]: value };
+
+      if (
+        field === 'isCombo' &&
+        value === true &&
+        (!item.components || item.components.length === 0)
+      ) {
+        item.components = [
+          { childSku: '', description: '', quantityPerCombo: 1 },
+        ];
+      }
+
+      updated[index] = item;
+      return updated;
+    });
+  };
+
+  const handleAddComboComponent = (itemIndex: number) => {
+    setPackingList((prev) => {
+      const updated = [...prev];
+      const item = { ...updated[itemIndex] };
+      const currentComps = item.components || [];
+      item.components = [
+        ...currentComps,
+        { childSku: '', description: '', quantityPerCombo: 1 },
+      ];
+      updated[itemIndex] = item;
+      return updated;
+    });
+  };
+
+  const handleRemoveComboComponent = (itemIndex: number, compIndex: number) => {
+    setPackingList((prev) => {
+      const updated = [...prev];
+      const item = { ...updated[itemIndex] };
+      if (!item.components) return prev;
+      item.components = item.components.filter((_, cIdx) => cIdx !== compIndex);
+      updated[itemIndex] = item;
+      return updated;
+    });
+  };
+
+  const handleUpdateComboComponent = (
+    itemIndex: number,
+    compIndex: number,
+    field: keyof ComboComponent,
+    value: unknown,
+  ) => {
+    setPackingList((prev) => {
+      const updated = [...prev];
+      const item = { ...updated[itemIndex] };
+      if (!item.components) return prev;
+      const comps = [...item.components];
+      comps[compIndex] = { ...comps[compIndex], [field]: value };
+      item.components = comps;
+      updated[itemIndex] = item;
       return updated;
     });
   };
@@ -661,6 +772,8 @@ export default function InventoryPage() {
         rackLevel: 'A',
         moduleNumber: 1,
         locationId: locations[0]?.id || '',
+        isCombo: false,
+        components: [],
       },
     ]);
   };
@@ -721,28 +834,29 @@ export default function InventoryPage() {
     }
   };
 
-  const handleAddPalletToItem = (itemIdx: number) => {
+  const handleAddPalletToItem = (
+    itemIdx: number,
+    selectedChildSku?: string,
+  ) => {
     setPhysicalControlItems((prev) => {
       const updated = [...prev];
       const item = { ...updated[itemIdx] };
       const currentPallets = item.pallets || [];
       const defaultLoc = locations[0]?.id || '';
 
-      const allocatedBultos = currentPallets.reduce(
-        (acc: number, p) => acc + (Number(p.quantityBultos) || 0),
-        0,
-      );
-      const remainingBultos = Math.max(
-        0,
-        item.quantityBultos - allocatedBultos,
-      );
-
       item.pallets = [
         ...currentPallets,
         {
           palletIndex: currentPallets.length + 1,
-          quantityBultos: remainingBultos > 0 ? remainingBultos : 1,
+          quantityBultos: 1,
+          unitsPerBox: 1,
+          lengthCm: 40,
+          widthCm: 30,
+          heightCm: 30,
+          weightPerBultoKg: 10,
+          volumePerBultoM3: 0.036,
           locationId: defaultLoc,
+          childSku: selectedChildSku,
         },
       ];
       updated[itemIdx] = item;
@@ -773,15 +887,47 @@ export default function InventoryPage() {
       const updated = [...prev];
       const item = { ...updated[itemIdx] };
       const pallets = [...item.pallets];
-      pallets[palletIdx] = { ...pallets[palletIdx], [field]: value };
+      const updatedPallet = { ...pallets[palletIdx], [field]: value };
+
+      if (field === 'lengthCm' || field === 'widthCm' || field === 'heightCm') {
+        const l = field === 'lengthCm' ? Number(value) : updatedPallet.lengthCm;
+        const w = field === 'widthCm' ? Number(value) : updatedPallet.widthCm;
+        const h = field === 'heightCm' ? Number(value) : updatedPallet.heightCm;
+        updatedPallet.volumePerBultoM3 = Number(
+          ((l * w * h) / 1000000).toFixed(4),
+        );
+      }
+
+      pallets[palletIdx] = updatedPallet;
       item.pallets = pallets;
       updated[itemIdx] = item;
       return updated;
     });
   };
 
+  const toggleOmitItem = (itemIdx: number) => {
+    setPhysicalControlItems((prev) => {
+      const updated = [...prev];
+      const current = updated[itemIdx];
+      const nextOmittedState = !current.isOmitted;
+
+      updated[itemIdx] = {
+        ...current,
+        isOmitted: nextOmittedState,
+        isChecked: nextOmittedState ? true : false,
+        controlledBy: nextOmittedState
+          ? `${currentUser.name} (FALTANTE 0)`
+          : null,
+        pallets: nextOmittedState
+          ? current.pallets.map((p) => ({ ...p, quantityBultos: 0 }))
+          : current.pallets,
+      };
+      return updated;
+    });
+  };
+
   // ---------------------------------------------------------------------------
-  // ACCIONES HTTP CON EL BACKEND (CREAR, PROCESAR Y BORRAR)
+  // ACCIONES HTTP CON EL BACKEND
   // ---------------------------------------------------------------------------
   const handleCreateWarehouse = async () => {
     if (!newWhName.trim()) {
@@ -819,12 +965,31 @@ export default function InventoryPage() {
     const fallbackLocationId = locations[0]?.id;
 
     for (let i = 0; i < packingList.length; i++) {
-      if (!packingList[i].productSku || !packingList[i].productName) {
+      const row = packingList[i];
+      if (!row.productSku || !row.productName) {
         setErrorMsg(`Indique Código SKU y Descripción en la línea #${i + 1}.`);
         return;
       }
-      const effectiveLoc =
-        packingList[i].locationId?.trim() || fallbackLocationId;
+
+      if (row.isCombo) {
+        if (!row.components || row.components.length === 0) {
+          setErrorMsg(
+            `El producto "${row.productSku}" está marcado como Combo pero no tiene componentes agregados.`,
+          );
+          return;
+        }
+        for (let c = 0; c < row.components.length; c++) {
+          const comp = row.components[c];
+          if (!comp.childSku.trim() || !comp.description.trim()) {
+            setErrorMsg(
+              `Complete el SKU Hijo y Descripción en el componente #${c + 1} del Combo "${row.productSku}".`,
+            );
+            return;
+          }
+        }
+      }
+
+      const effectiveLoc = row.locationId?.trim() || fallbackLocationId;
       if (!effectiveLoc) {
         setErrorMsg(
           `La línea #${i + 1} requiere una ubicación válida y no hay ubicaciones cargadas.`,
@@ -850,6 +1015,8 @@ export default function InventoryPage() {
             sampleUnits: Number(item.sampleUnits) || 0,
             notes: item.notes || '',
             locationId: validLocId,
+            isCombo: Boolean(item.isCombo),
+            components: item.isCombo ? item.components : [],
           };
         }),
       };
@@ -881,6 +1048,8 @@ export default function InventoryPage() {
           rackLevel: 'A',
           moduleNumber: 1,
           locationId: locations[0]?.id || '',
+          isCombo: false,
+          components: [],
         },
       ]);
 
@@ -929,24 +1098,53 @@ export default function InventoryPage() {
       entryDate: string;
       locationId: string;
       warehouseId: string;
+      parentSku?: string;
     }> = [];
     const defaultLocId = locations[0]?.id;
 
     for (const item of physicalControlItems) {
-      const pallets = item.pallets || [];
-      const sumPalletBultos = pallets.reduce(
-        (acc: number, p) => acc + (Number(p.quantityBultos) || 0),
-        0,
-      );
+      if (item.isOmitted) {
+        continue;
+      }
 
-      if (sumPalletBultos !== item.quantityBultos) {
-        setErrorMsg(
-          `Atención: Para el SKU ${item.sku}, la suma de bultos por pallet (${sumPalletBultos}) no coincide con el total de bultos del producto (${item.quantityBultos}).`,
+      const pallets = item.pallets || [];
+
+      if (item.components && item.components.length > 0) {
+        for (const comp of item.components) {
+          const compPallets = pallets.filter(
+            (p) => p.childSku === comp.childSku,
+          );
+          const compSum = compPallets.reduce(
+            (acc, p) => acc + (Number(p.quantityBultos) || 0),
+            0,
+          );
+          const expectedCompTotal = item.quantityBultos * comp.quantityPerCombo;
+
+          if (compSum !== expectedCompTotal) {
+            setErrorMsg(
+              `Atención: Para el SKU Hijo ${comp.childSku} (del Combo ${item.sku}), los bultos asignados (${compSum}) no coinciden con lo esperado (${expectedCompTotal}).`,
+            );
+            return;
+          }
+        }
+      } else {
+        const sumPalletBultos = pallets.reduce(
+          (acc: number, p) => acc + (Number(p.quantityBultos) || 0),
+          0,
         );
-        return;
+
+        if (sumPalletBultos !== item.quantityBultos) {
+          setErrorMsg(
+            `Atención: Para el SKU ${item.sku}, la suma de bultos por pallet (${sumPalletBultos}) no coincide con el total de bultos del producto (${item.quantityBultos}).`,
+          );
+          return;
+        }
       }
 
       for (const pallet of pallets) {
+        const qtyBultosPallet = Number(pallet.quantityBultos) || 0;
+        if (qtyBultosPallet <= 0) continue;
+
         const validLocId = pallet.locationId?.trim() || defaultLocId;
         if (!validLocId) {
           setErrorMsg(
@@ -955,19 +1153,36 @@ export default function InventoryPage() {
           return;
         }
 
+        const effectiveSku = pallet.childSku || item.sku;
+        const effectiveDesc = pallet.childSku
+          ? item.components?.find((c) => c.childSku === pallet.childSku)
+              ?.description || item.description
+          : item.description;
+
         itemsToSubmit.push({
-          sku: item.sku,
-          description: item.description,
-          quantityBultos: Number(pallet.quantityBultos) || 1,
-          unitsPerBox: Number(item.unitsPerBox) || 1,
-          weightPerBultoKg: Number(item.weightPerBultoKg) || 10,
-          volumePerBultoM3: Number(item.volumePerBultoM3) || 0.036,
+          sku: effectiveSku,
+          description: effectiveDesc,
+          quantityBultos: qtyBultosPallet,
+          unitsPerBox:
+            Number(pallet.unitsPerBox) || Number(item.unitsPerBox) || 1,
+          weightPerBultoKg:
+            Number(pallet.weightPerBultoKg) ||
+            Number(item.weightPerBultoKg) ||
+            10,
+          volumePerBultoM3:
+            Number(pallet.volumePerBultoM3) ||
+            Number(item.volumePerBultoM3) ||
+            0.036,
           sampleUnits: item.hasShowroomSample
             ? Number(item.sampleUnitsCount) || 0
             : 0,
           entryDate: generalEntryDate,
           locationId: validLocId,
           warehouseId: dischargeWarehouseId,
+          parentSku:
+            item.isCombo || (item.components && item.components.length > 0)
+              ? item.sku
+              : undefined,
         });
       }
     }
@@ -1188,7 +1403,6 @@ export default function InventoryPage() {
 
   const pendingCount = physicalControlItems.filter((i) => !i.isChecked).length;
   const checkedCount = physicalControlItems.filter((i) => i.isChecked).length;
-  const editedCapacitiesCount = Object.keys(editedCapacities).length;
 
   return (
     <ProtectedRoute allowedRoles={['ADMIN', 'WAREHOUSE_MANAGER', 'PICKER']}>
@@ -1313,9 +1527,7 @@ export default function InventoryPage() {
           </div>
         ) : (
           <>
-            {/* ------------------------------------------------------------------ */}
             {/* TAB: MALLA OCUPACIÓN */}
-            {/* ------------------------------------------------------------------ */}
             {activeTab === 'MALLA' && (
               <section className="space-y-6">
                 {!selectedMallaWarehouse ? (
@@ -1476,9 +1688,7 @@ export default function InventoryPage() {
               </section>
             )}
 
-            {/* ------------------------------------------------------------------ */}
             {/* TAB: CONTROL MÓVIL Y PRE-CARGA */}
-            {/* ------------------------------------------------------------------ */}
             {activeTab === 'INBOUND' && (
               <section className="space-y-6">
                 {/* FASE 1 */}
@@ -1521,108 +1731,219 @@ export default function InventoryPage() {
                     {packingList.map((item, idx) => (
                       <div
                         key={idx}
-                        className="bg-slate-950 p-3 rounded-xl border border-slate-800 grid grid-cols-1 sm:grid-cols-12 gap-3 text-xs items-end"
+                        className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 space-y-3"
                       >
-                        <div className="sm:col-span-3">
-                          <label
-                            htmlFor={`sku-input-${idx}`}
-                            className="block text-slate-400 mb-1"
-                          >
-                            Código SKU *
-                          </label>
-                          <input
-                            id={`sku-input-${idx}`}
-                            type="text"
-                            value={item.productSku}
-                            onChange={(e) =>
-                              handleUpdatePackingItem(
-                                idx,
-                                'productSku',
-                                e.target.value,
-                              )
-                            }
-                            placeholder="Ej. US26615"
-                            className="w-full bg-slate-900 border border-slate-800 p-2 rounded text-white font-mono"
-                          />
-                        </div>
-
-                        <div className="sm:col-span-4">
-                          <label
-                            htmlFor={`name-input-${idx}`}
-                            className="block text-slate-400 mb-1"
-                          >
-                            Descripción *
-                          </label>
-                          <input
-                            id={`name-input-${idx}`}
-                            type="text"
-                            value={item.productName}
-                            onChange={(e) =>
-                              handleUpdatePackingItem(
-                                idx,
-                                'productName',
-                                e.target.value,
-                              )
-                            }
-                            placeholder="Ej. Casco de bicicleta"
-                            className="w-full bg-slate-900 border border-slate-800 p-2 rounded text-white"
-                          />
-                        </div>
-
-                        <div className="sm:col-span-2">
-                          <label
-                            htmlFor={`bultos-input-${idx}`}
-                            className="block text-slate-400 mb-1"
-                          >
-                            Total Bultos
-                          </label>
-                          <input
-                            id={`bultos-input-${idx}`}
-                            type="number"
-                            value={item.quantityBultosExpected}
-                            onChange={(e) =>
-                              handleUpdatePackingItem(
-                                idx,
-                                'quantityBultosExpected',
-                                Number(e.target.value),
-                              )
-                            }
-                            className="w-full bg-slate-900 border border-slate-800 p-2 rounded text-amber-400 font-bold text-center"
-                          />
-                        </div>
-
-                        <div className="sm:col-span-2">
-                          <label
-                            htmlFor={`units-input-${idx}`}
-                            className="block text-slate-400 mb-1"
-                          >
-                            Total Unidades
-                          </label>
-                          <input
-                            id={`units-input-${idx}`}
-                            type="number"
-                            value={item.totalUnitsExpected}
-                            onChange={(e) =>
-                              handleUpdatePackingItem(
-                                idx,
-                                'totalUnitsExpected',
-                                Number(e.target.value),
-                              )
-                            }
-                            className="w-full bg-slate-900 border border-slate-800 p-2 rounded text-amber-400 font-bold text-center"
-                          />
-                        </div>
-
-                        <div className="sm:col-span-1 flex justify-end">
-                          {packingList.length > 1 && (
-                            <button
-                              type="button"
-                              onClick={() => handleRemovePackingItem(idx)}
-                              aria-label={`Eliminar producto #${idx + 1}`}
-                              className="px-2 py-2 bg-red-950 border border-red-800 text-red-400 hover:bg-red-900 rounded font-bold w-full text-center"
+                        <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 text-xs items-end">
+                          <div className="sm:col-span-3">
+                            <label
+                              htmlFor={`sku-input-${idx}`}
+                              className="block text-slate-400 mb-1"
                             >
-                              X
-                            </button>
+                              Código SKU *
+                            </label>
+                            <input
+                              id={`sku-input-${idx}`}
+                              type="text"
+                              value={item.productSku}
+                              onChange={(e) =>
+                                handleUpdatePackingItem(
+                                  idx,
+                                  'productSku',
+                                  e.target.value,
+                                )
+                              }
+                              placeholder="Ej. US26615"
+                              className="w-full bg-slate-900 border border-slate-800 p-2 rounded text-white font-mono"
+                            />
+                          </div>
+
+                          <div className="sm:col-span-4">
+                            <label
+                              htmlFor={`name-input-${idx}`}
+                              className="block text-slate-400 mb-1"
+                            >
+                              Descripción *
+                            </label>
+                            <input
+                              id={`name-input-${idx}`}
+                              type="text"
+                              value={item.productName}
+                              onChange={(e) =>
+                                handleUpdatePackingItem(
+                                  idx,
+                                  'productName',
+                                  e.target.value,
+                                )
+                              }
+                              placeholder="Ej. Casco de bicicleta"
+                              className="w-full bg-slate-900 border border-slate-800 p-2 rounded text-white"
+                            />
+                          </div>
+
+                          <div className="sm:col-span-2">
+                            <label
+                              htmlFor={`bultos-input-${idx}`}
+                              className="block text-slate-400 mb-1"
+                            >
+                              Total Bultos
+                            </label>
+                            <input
+                              id={`bultos-input-${idx}`}
+                              type="number"
+                              value={item.quantityBultosExpected}
+                              onChange={(e) =>
+                                handleUpdatePackingItem(
+                                  idx,
+                                  'quantityBultosExpected',
+                                  Number(e.target.value),
+                                )
+                              }
+                              className="w-full bg-slate-900 border border-slate-800 p-2 rounded text-amber-400 font-bold text-center"
+                            />
+                          </div>
+
+                          <div className="sm:col-span-2">
+                            <label
+                              htmlFor={`units-input-${idx}`}
+                              className="block text-slate-400 mb-1"
+                            >
+                              Total Unidades
+                            </label>
+                            <input
+                              id={`units-input-${idx}`}
+                              type="number"
+                              value={item.totalUnitsExpected}
+                              onChange={(e) =>
+                                handleUpdatePackingItem(
+                                  idx,
+                                  'totalUnitsExpected',
+                                  Number(e.target.value),
+                                )
+                              }
+                              className="w-full bg-slate-900 border border-slate-800 p-2 rounded text-amber-400 font-bold text-center"
+                            />
+                          </div>
+
+                          <div className="sm:col-span-1 flex justify-end">
+                            {packingList.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => handleRemovePackingItem(idx)}
+                                aria-label={`Eliminar producto #${idx + 1}`}
+                                className="px-2 py-2 bg-red-950 border border-red-800 text-red-400 hover:bg-red-900 rounded font-bold w-full text-center"
+                              >
+                                X
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* CONFIGURACIÓN DE COMBO / KIT */}
+                        <div className="pt-2 border-t border-slate-800/80">
+                          <label className="flex items-center gap-2 cursor-pointer select-none text-xs text-purple-300 font-bold w-fit">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(item.isCombo)}
+                              onChange={(e) =>
+                                handleUpdatePackingItem(
+                                  idx,
+                                  'isCombo',
+                                  e.target.checked,
+                                )
+                              }
+                              className="w-4 h-4 accent-purple-500 rounded"
+                            />
+                            📦 ¿Es un Combo / Kit formado por varios SKUs Hijos?
+                          </label>
+
+                          {item.isCombo && (
+                            <div className="mt-3 bg-purple-950/20 border border-purple-800/50 p-3 rounded-xl space-y-2">
+                              <div className="flex justify-between items-center">
+                                <span className="text-[11px] font-bold text-purple-200 uppercase tracking-wider">
+                                  Componentes del Combo / Kit (SKUs Hijos)
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleAddComboComponent(idx)}
+                                  className="px-2.5 py-1 bg-purple-900/80 hover:bg-purple-800 text-purple-100 font-bold rounded text-[10px]"
+                                >
+                                  + Agregar SKU Hijo
+                                </button>
+                              </div>
+
+                              {(item.components || []).map((comp, cIdx) => (
+                                <div
+                                  key={cIdx}
+                                  className="grid grid-cols-1 sm:grid-cols-12 gap-2 text-xs items-center bg-slate-900 p-2 rounded-lg border border-slate-800"
+                                >
+                                  <div className="sm:col-span-4">
+                                    <input
+                                      type="text"
+                                      placeholder="SKU Hijo (Ej. SILLA-01)"
+                                      value={comp.childSku}
+                                      onChange={(e) =>
+                                        handleUpdateComboComponent(
+                                          idx,
+                                          cIdx,
+                                          'childSku',
+                                          e.target.value,
+                                        )
+                                      }
+                                      className="w-full bg-slate-950 border border-slate-800 p-1.5 rounded text-amber-300 font-mono text-[11px]"
+                                    />
+                                  </div>
+
+                                  <div className="sm:col-span-5">
+                                    <input
+                                      type="text"
+                                      placeholder="Descripción Componente"
+                                      value={comp.description}
+                                      onChange={(e) =>
+                                        handleUpdateComboComponent(
+                                          idx,
+                                          cIdx,
+                                          'description',
+                                          e.target.value,
+                                        )
+                                      }
+                                      className="w-full bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-[11px]"
+                                    />
+                                  </div>
+
+                                  <div className="sm:col-span-2">
+                                    <input
+                                      type="number"
+                                      min={1}
+                                      placeholder="Cant x Combo"
+                                      value={comp.quantityPerCombo}
+                                      onChange={(e) =>
+                                        handleUpdateComboComponent(
+                                          idx,
+                                          cIdx,
+                                          'quantityPerCombo',
+                                          Number(e.target.value),
+                                        )
+                                      }
+                                      className="w-full bg-slate-950 border border-slate-800 p-1.5 rounded text-amber-400 font-bold text-center text-[11px]"
+                                    />
+                                  </div>
+
+                                  <div className="sm:col-span-1 flex justify-end">
+                                    {(item.components || []).length > 1 && (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          handleRemoveComboComponent(idx, cIdx)
+                                        }
+                                        className="text-red-400 font-bold hover:text-red-300 px-2 py-1"
+                                      >
+                                        ✕
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
                           )}
                         </div>
                       </div>
@@ -1776,34 +2097,54 @@ export default function InventoryPage() {
                               activeLock &&
                               activeLock.userId !== currentUser.id;
 
+                            const hasComponents =
+                              item.components && item.components.length > 0;
+
                             return (
                               <div
                                 key={item.sku}
                                 className={`bg-slate-950 border rounded-xl ${
-                                  isLockedByOther
-                                    ? 'border-purple-500/50'
-                                    : item.isChecked
-                                      ? 'border-emerald-500/50'
-                                      : 'border-slate-800'
+                                  item.isOmitted
+                                    ? 'border-red-900/60 opacity-60 bg-red-950/10'
+                                    : isLockedByOther
+                                      ? 'border-purple-500/50'
+                                      : item.isChecked
+                                        ? 'border-emerald-500/50'
+                                        : 'border-slate-800'
                                 }`}
                               >
-                                <button
-                                  type="button"
-                                  onClick={() => toggleItemAccordion(item.sku)}
-                                  className="w-full text-left p-3.5 flex justify-between items-center select-none"
-                                >
-                                  <div>
-                                    <h3 className="font-black text-white text-sm">
-                                      SKU:{' '}
-                                      <span className="text-amber-400">
-                                        {item.sku}
-                                      </span>{' '}
-                                      - {item.description}
-                                    </h3>
+                                <div className="w-full text-left p-3.5 flex justify-between items-center select-none">
+                                  <div
+                                    onClick={() =>
+                                      toggleItemAccordion(item.sku)
+                                    }
+                                    className="cursor-pointer flex-1"
+                                  >
+                                    <div className="flex items-center gap-2">
+                                      <h3 className="font-black text-white text-sm">
+                                        SKU:{' '}
+                                        <span className="text-amber-400">
+                                          {item.sku}
+                                        </span>{' '}
+                                        - {item.description}
+                                      </h3>
+                                      {(item.isCombo || hasComponents) && (
+                                        <span className="px-2 py-0.5 text-[10px] font-black bg-purple-950 text-purple-300 border border-purple-800 rounded-full">
+                                          COMBO / KIT
+                                        </span>
+                                      )}
+                                      {item.isOmitted && (
+                                        <span className="px-2 py-0.5 text-[10px] font-black bg-red-950 text-red-300 border border-red-800 rounded-full">
+                                          FALTANTE TOTAL (0 BULTOS)
+                                        </span>
+                                      )}
+                                    </div>
                                     <p className="text-xs text-slate-400 mt-0.5">
-                                      Bultos:{' '}
+                                      Bultos Esperados:{' '}
                                       <strong className="text-amber-400">
-                                        {item.quantityBultos}
+                                        {item.isOmitted
+                                          ? 0
+                                          : item.quantityBultos}
                                       </strong>
                                       {item.controlledBy && (
                                         <span className="ml-2 text-emerald-400 font-bold">
@@ -1813,349 +2154,425 @@ export default function InventoryPage() {
                                     </p>
                                   </div>
 
-                                  <div className="flex items-center gap-3">
+                                  <div className="flex items-center gap-2">
                                     <button
                                       type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        toggleItemControlStatus(realIdx);
-                                      }}
-                                      className={`px-3 py-1.5 rounded text-xs font-bold ${
-                                        item.isChecked
-                                          ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
-                                          : 'bg-slate-800 text-slate-300'
+                                      onClick={() => toggleOmitItem(realIdx)}
+                                      className={`px-2.5 py-1.5 rounded text-xs font-bold border transition-colors ${
+                                        item.isOmitted
+                                          ? 'bg-red-900/40 text-red-300 border-red-700 hover:bg-red-800/50'
+                                          : 'bg-red-950/20 text-red-400 border-red-900 hover:bg-red-900/40'
                                       }`}
+                                      title="Marcar si este producto no vino en el contenedor"
                                     >
-                                      {item.isChecked
-                                        ? '✓ Controlado'
-                                        : 'Marcar Controlado'}
+                                      {item.isOmitted
+                                        ? '↩ Restaurar SKU'
+                                        : '✕ Marcar 0 / Faltante'}
                                     </button>
-                                    <span className="text-amber-400 font-bold text-xs">
-                                      {isExpanded ? '▲ Ocultar' : '▼ Editar'}
-                                    </span>
+
+                                    {!item.isOmitted && (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          toggleItemControlStatus(realIdx)
+                                        }
+                                        className={`px-3 py-1.5 rounded text-xs font-bold ${
+                                          item.isChecked
+                                            ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                                            : 'bg-slate-800 text-slate-300'
+                                        }`}
+                                      >
+                                        {item.isChecked
+                                          ? '✓ Controlado'
+                                          : 'Marcar Controlado'}
+                                      </button>
+                                    )}
+
+                                    {!item.isOmitted && (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          toggleItemAccordion(item.sku)
+                                        }
+                                        className="text-amber-400 font-bold text-xs ml-1"
+                                      >
+                                        {isExpanded ? '▲ Ocultar' : '▼ Editar'}
+                                      </button>
+                                    )}
                                   </div>
-                                </button>
+                                </div>
 
-                                {/* DESPLEGABLE DE EDICIÓN Y PALLETS */}
-                                {isExpanded && !isLockedByOther && (
-                                  <div className="p-4 border-t border-slate-800 space-y-4 text-xs bg-slate-900/40 rounded-b-xl">
-                                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 bg-slate-900 p-3 rounded-lg border border-slate-800">
-                                      <div>
-                                        <label
-                                          htmlFor={`units-per-box-${realIdx}`}
-                                          className="block text-slate-400 mb-1"
-                                        >
-                                          Unidades por Bulto
-                                        </label>
-                                        <input
-                                          id={`units-per-box-${realIdx}`}
-                                          type="number"
-                                          value={item.unitsPerBox}
-                                          onChange={(e) =>
-                                            handleUpdatePhysicalItem(
-                                              realIdx,
-                                              'unitsPerBox',
-                                              Number(e.target.value),
-                                            )
-                                          }
-                                          className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold"
-                                        />
-                                      </div>
-
-                                      <div>
-                                        <span className="block text-slate-400 mb-1">
-                                          Medidas (L x A x H cm)
-                                        </span>
-                                        <div className="flex gap-1">
-                                          <input
-                                            aria-label="Largo en cm"
-                                            type="number"
-                                            value={item.lengthCm}
-                                            onChange={(e) =>
-                                              handleUpdatePhysicalItem(
-                                                realIdx,
-                                                'lengthCm',
-                                                Number(e.target.value),
-                                              )
-                                            }
-                                            className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center"
-                                          />
-                                          <input
-                                            aria-label="Ancho en cm"
-                                            type="number"
-                                            value={item.widthCm}
-                                            onChange={(e) =>
-                                              handleUpdatePhysicalItem(
-                                                realIdx,
-                                                'widthCm',
-                                                Number(e.target.value),
-                                              )
-                                            }
-                                            className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center"
-                                          />
-                                          <input
-                                            aria-label="Alto en cm"
-                                            type="number"
-                                            value={item.heightCm}
-                                            onChange={(e) =>
-                                              handleUpdatePhysicalItem(
-                                                realIdx,
-                                                'heightCm',
-                                                Number(e.target.value),
-                                              )
-                                            }
-                                            className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center"
-                                          />
-                                        </div>
-                                      </div>
-
-                                      <div>
-                                        <label
-                                          htmlFor={`weight-input-${realIdx}`}
-                                          className="block text-slate-400 mb-1"
-                                        >
-                                          Peso por Bulto (Kg)
-                                        </label>
-                                        <input
-                                          id={`weight-input-${realIdx}`}
-                                          type="number"
-                                          value={item.weightPerBultoKg}
-                                          onChange={(e) =>
-                                            handleUpdatePhysicalItem(
-                                              realIdx,
-                                              'weightPerBultoKg',
-                                              Number(e.target.value),
-                                            )
-                                          }
-                                          className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold"
-                                        />
-                                      </div>
-
-                                      <div className="flex flex-col justify-end">
-                                        <label className="flex items-center gap-2 cursor-pointer text-amber-300 font-bold mb-1">
-                                          <input
-                                            type="checkbox"
-                                            checked={item.hasShowroomSample}
-                                            onChange={(e) =>
-                                              handleUpdatePhysicalItem(
-                                                realIdx,
-                                                'hasShowroomSample',
-                                                e.target.checked,
-                                              )
-                                            }
-                                            className="w-4 h-4 accent-amber-500 rounded"
-                                          />
-                                          Muestra para Showroom
-                                        </label>
-                                        {item.hasShowroomSample && (
-                                          <input
-                                            aria-label="Cantidad de unidades para muestra"
-                                            type="number"
-                                            placeholder="Cant. Unidades"
-                                            value={item.sampleUnitsCount}
-                                            onChange={(e) =>
-                                              handleUpdatePhysicalItem(
-                                                realIdx,
-                                                'sampleUnitsCount',
-                                                Number(e.target.value),
-                                              )
-                                            }
-                                            className="w-full bg-slate-950 border border-amber-500/50 p-1.5 rounded text-amber-400 font-bold text-center"
-                                          />
-                                        )}
-                                      </div>
-                                    </div>
-
-                                    {/* GESTIÓN DE PALLETS */}
-                                    <div className="space-y-2">
-                                      <div className="flex justify-between items-center">
-                                        <span className="font-bold text-slate-300 text-xs">
-                                          Distribución de Pallets y Estibado
-                                        </span>
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            handleAddPalletToItem(realIdx)
-                                          }
-                                          className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold rounded text-[11px]"
-                                        >
-                                          + Agregar Otro Pallet
-                                        </button>
-                                      </div>
-
-                                      {(item.pallets || []).map(
-                                        (pallet, pIdx) => {
-                                          const keySearch = `${item.sku}_${pIdx}`;
-                                          const locSearchQuery = (
-                                            phase2LocationSearches[keySearch] ||
-                                            ''
-                                          )
-                                            .toLowerCase()
-                                            .trim();
-
-                                          const filteredLocList = locSearchQuery
-                                            ? locations.filter(
-                                                (l) =>
-                                                  l.code
-                                                    .toLowerCase()
-                                                    .includes(locSearchQuery) ||
-                                                  (l.zoneName &&
-                                                    l.zoneName
-                                                      .toLowerCase()
-                                                      .includes(
-                                                        locSearchQuery,
-                                                      )),
-                                              )
-                                            : locations;
-
-                                          return (
-                                            <div
-                                              key={pIdx}
-                                              className="bg-slate-900 border border-slate-800 p-3 rounded-lg grid grid-cols-1 sm:grid-cols-12 gap-3 items-end"
-                                            >
-                                              <div className="sm:col-span-2 font-bold text-amber-400">
-                                                Pallet #{pallet.palletIndex}
-                                              </div>
-
-                                              <div className="sm:col-span-3">
-                                                <label
-                                                  htmlFor={`pallet-qty-${realIdx}-${pIdx}`}
-                                                  className="block text-slate-400 mb-1"
-                                                >
-                                                  Bultos en Pallet
-                                                </label>
-                                                <input
-                                                  id={`pallet-qty-${realIdx}-${pIdx}`}
-                                                  type="number"
-                                                  value={pallet.quantityBultos}
-                                                  onChange={(e) =>
-                                                    handleUpdatePalletItem(
-                                                      realIdx,
-                                                      pIdx,
-                                                      'quantityBultos',
-                                                      Number(e.target.value),
-                                                    )
-                                                  }
-                                                  className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-amber-300 font-bold text-center"
-                                                />
-                                              </div>
-
-                                              <div className="sm:col-span-5">
-                                                <label
-                                                  htmlFor={`pallet-loc-${realIdx}-${pIdx}`}
-                                                  className="block text-slate-400 mb-1"
-                                                >
-                                                  Buscar y Asignar Ubicación *
-                                                </label>
-                                                <div className="space-y-1">
-                                                  <input
-                                                    type="text"
-                                                    placeholder="🔍 Escriba para filtrar..."
-                                                    value={
-                                                      phase2LocationSearches[
-                                                        keySearch
-                                                      ] || ''
-                                                    }
-                                                    onChange={(e) =>
-                                                      setPhase2LocationSearches(
-                                                        (prev) => ({
-                                                          ...prev,
-                                                          [keySearch]:
-                                                            e.target.value,
-                                                        }),
-                                                      )
-                                                    }
-                                                    className="w-full bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-xs"
-                                                  />
-                                                  <select
-                                                    id={`pallet-loc-${realIdx}-${pIdx}`}
-                                                    value={pallet.locationId}
-                                                    onChange={(e) =>
-                                                      handleUpdatePalletItem(
-                                                        realIdx,
-                                                        pIdx,
-                                                        'locationId',
-                                                        e.target.value,
-                                                      )
-                                                    }
-                                                    className="w-full bg-slate-950 border border-amber-500/40 p-2 rounded text-white font-bold text-xs"
-                                                  >
-                                                    {filteredLocList.length >
-                                                    0 ? (
-                                                      filteredLocList.map(
-                                                        (loc) => (
-                                                          <option
-                                                            key={loc.id}
-                                                            value={loc.id}
-                                                          >
-                                                            {loc.code} (
-                                                            {loc.zoneName})
-                                                          </option>
-                                                        ),
-                                                      )
-                                                    ) : (
-                                                      <option value="">
-                                                        Sin ubicaciones en este
-                                                        depósito
-                                                      </option>
-                                                    )}
-                                                  </select>
+                                {/* DESPLEGABLE DE EDICIÓN Y COMPONENTES HIJOS */}
+                                {isExpanded &&
+                                  !isLockedByOther &&
+                                  !item.isOmitted && (
+                                    <div className="p-4 border-t border-slate-800 space-y-4 text-xs bg-slate-900/40 rounded-b-xl">
+                                      {hasComponents && (
+                                        <div className="bg-purple-950/30 border border-purple-800/50 p-3 rounded-lg space-y-2">
+                                          <span className="text-xs font-bold text-purple-300 block">
+                                            📦 Desglose por Componentes (SKUs
+                                            Hijos)
+                                          </span>
+                                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+                                            {item.components!.map((comp) => (
+                                              <div
+                                                key={comp.childSku}
+                                                className="bg-slate-950/80 p-2 rounded border border-slate-800 flex justify-between items-center"
+                                              >
+                                                <div>
+                                                  <strong className="text-amber-400 font-mono block">
+                                                    {comp.childSku}
+                                                  </strong>
+                                                  <span className="text-slate-300">
+                                                    {comp.description}
+                                                  </span>
                                                 </div>
-                                              </div>
-
-                                              <div className="sm:col-span-2 flex gap-1 justify-end">
-                                                <button
-                                                  type="button"
-                                                  onClick={() =>
-                                                    setPrintModalData({
-                                                      productSku: item.sku,
-                                                      productName:
-                                                        item.description,
-                                                      quantityBultos:
-                                                        pallet.quantityBultos,
-                                                      locationCode:
-                                                        locations.find(
-                                                          (l) =>
-                                                            l.id ===
-                                                            pallet.locationId,
-                                                        )?.code || 'S/U',
-                                                      warehouseName:
-                                                        simpleWarehousesList.find(
-                                                          (w) =>
-                                                            w.id ===
-                                                            dischargeWarehouseId,
-                                                        )?.name,
-                                                      date: generalEntryDate,
-                                                    })
-                                                  }
-                                                  className="px-2.5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded text-[10px] flex-1 text-center"
-                                                >
-                                                  Rótulo A4
-                                                </button>
-
-                                                {item.pallets.length > 1 && (
+                                                <div className="flex items-center gap-2">
+                                                  <span className="bg-purple-900/80 text-purple-200 px-2 py-1 rounded font-bold">
+                                                    {item.quantityBultos *
+                                                      comp.quantityPerCombo}{' '}
+                                                    bultos
+                                                  </span>
                                                   <button
                                                     type="button"
                                                     onClick={() =>
-                                                      handleRemovePalletFromItem(
+                                                      handleAddPalletToItem(
                                                         realIdx,
-                                                        pIdx,
+                                                        comp.childSku,
                                                       )
                                                     }
-                                                    aria-label={`Eliminar Pallet #${pallet.palletIndex}`}
-                                                    className="px-2 py-2 bg-red-950 border border-red-800 text-red-400 hover:bg-red-900 rounded font-bold"
+                                                    className="px-2 py-1 bg-purple-800 hover:bg-purple-700 text-white font-bold rounded text-[10px]"
                                                   >
-                                                    X
+                                                    + Pallet
                                                   </button>
-                                                )}
+                                                </div>
                                               </div>
-                                            </div>
-                                          );
-                                        },
+                                            ))}
+                                          </div>
+                                        </div>
                                       )}
+
+                                      {/* GESTIÓN DE PALLETS E INPUTS INDIVIDUALES */}
+                                      <div className="space-y-3">
+                                        <div className="flex justify-between items-center">
+                                          <span className="font-bold text-slate-300 text-xs">
+                                            Distribución de Pallets y Estibado
+                                          </span>
+                                          {!hasComponents && (
+                                            <button
+                                              type="button"
+                                              onClick={() =>
+                                                handleAddPalletToItem(realIdx)
+                                              }
+                                              className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold rounded text-[11px]"
+                                            >
+                                              + Agregar Otro Pallet
+                                            </button>
+                                          )}
+                                        </div>
+
+                                        {(item.pallets || []).map(
+                                          (pallet, pIdx) => {
+                                            const keySearch = `${item.sku}_${pIdx}`;
+                                            const locSearchQuery = (
+                                              phase2LocationSearches[
+                                                keySearch
+                                              ] || ''
+                                            )
+                                              .toLowerCase()
+                                              .trim();
+
+                                            const filteredLocList =
+                                              locSearchQuery
+                                                ? locations.filter(
+                                                    (l) =>
+                                                      l.code
+                                                        .toLowerCase()
+                                                        .includes(
+                                                          locSearchQuery,
+                                                        ) ||
+                                                      (l.zoneName &&
+                                                        l.zoneName
+                                                          .toLowerCase()
+                                                          .includes(
+                                                            locSearchQuery,
+                                                          )),
+                                                  )
+                                                : locations;
+
+                                            return (
+                                              <div
+                                                key={pIdx}
+                                                className="bg-slate-900 border border-slate-800 p-3 rounded-xl space-y-3"
+                                              >
+                                                <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                                                  <span className="font-bold text-amber-400">
+                                                    Pallet #{pallet.palletIndex}
+                                                  </span>
+                                                  {pallet.childSku && (
+                                                    <span className="text-xs font-mono text-purple-300 font-bold bg-purple-950/80 px-2 py-0.5 rounded border border-purple-800">
+                                                      SKU Hijo:{' '}
+                                                      {pallet.childSku}
+                                                    </span>
+                                                  )}
+                                                </div>
+
+                                                <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
+                                                  <div className="sm:col-span-2">
+                                                    <label
+                                                      htmlFor={`pallet-qty-${realIdx}-${pIdx}`}
+                                                      className="block text-slate-400 mb-1 text-[11px]"
+                                                    >
+                                                      Bultos
+                                                    </label>
+                                                    <input
+                                                      id={`pallet-qty-${realIdx}-${pIdx}`}
+                                                      type="number"
+                                                      value={
+                                                        pallet.quantityBultos
+                                                      }
+                                                      onChange={(e) =>
+                                                        handleUpdatePalletItem(
+                                                          realIdx,
+                                                          pIdx,
+                                                          'quantityBultos',
+                                                          Number(
+                                                            e.target.value,
+                                                          ),
+                                                        )
+                                                      }
+                                                      className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-amber-300 font-bold text-center text-xs"
+                                                    />
+                                                  </div>
+
+                                                  <div className="sm:col-span-2">
+                                                    <label
+                                                      htmlFor={`pallet-units-${realIdx}-${pIdx}`}
+                                                      className="block text-slate-400 mb-1 text-[11px]"
+                                                    >
+                                                      Unid. x Bulto
+                                                    </label>
+                                                    <input
+                                                      id={`pallet-units-${realIdx}-${pIdx}`}
+                                                      type="number"
+                                                      value={pallet.unitsPerBox}
+                                                      onChange={(e) =>
+                                                        handleUpdatePalletItem(
+                                                          realIdx,
+                                                          pIdx,
+                                                          'unitsPerBox',
+                                                          Number(
+                                                            e.target.value,
+                                                          ),
+                                                        )
+                                                      }
+                                                      className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold text-center text-xs"
+                                                    />
+                                                  </div>
+
+                                                  <div className="sm:col-span-3">
+                                                    <span className="block text-slate-400 mb-1 text-[11px]">
+                                                      Medidas (L x A x H cm)
+                                                    </span>
+                                                    <div className="flex gap-1">
+                                                      <input
+                                                        aria-label="Largo en cm"
+                                                        type="number"
+                                                        value={pallet.lengthCm}
+                                                        onChange={(e) =>
+                                                          handleUpdatePalletItem(
+                                                            realIdx,
+                                                            pIdx,
+                                                            'lengthCm',
+                                                            Number(
+                                                              e.target.value,
+                                                            ),
+                                                          )
+                                                        }
+                                                        className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center text-xs"
+                                                      />
+                                                      <input
+                                                        aria-label="Ancho en cm"
+                                                        type="number"
+                                                        value={pallet.widthCm}
+                                                        onChange={(e) =>
+                                                          handleUpdatePalletItem(
+                                                            realIdx,
+                                                            pIdx,
+                                                            'widthCm',
+                                                            Number(
+                                                              e.target.value,
+                                                            ),
+                                                          )
+                                                        }
+                                                        className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center text-xs"
+                                                      />
+                                                      <input
+                                                        aria-label="Alto en cm"
+                                                        type="number"
+                                                        value={pallet.heightCm}
+                                                        onChange={(e) =>
+                                                          handleUpdatePalletItem(
+                                                            realIdx,
+                                                            pIdx,
+                                                            'heightCm',
+                                                            Number(
+                                                              e.target.value,
+                                                            ),
+                                                          )
+                                                        }
+                                                        className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center text-xs"
+                                                      />
+                                                    </div>
+                                                  </div>
+
+                                                  <div className="sm:col-span-2">
+                                                    <label
+                                                      htmlFor={`pallet-weight-${realIdx}-${pIdx}`}
+                                                      className="block text-slate-400 mb-1 text-[11px]"
+                                                    >
+                                                      Peso Bulto (Kg)
+                                                    </label>
+                                                    <input
+                                                      id={`pallet-weight-${realIdx}-${pIdx}`}
+                                                      type="number"
+                                                      value={
+                                                        pallet.weightPerBultoKg
+                                                      }
+                                                      onChange={(e) =>
+                                                        handleUpdatePalletItem(
+                                                          realIdx,
+                                                          pIdx,
+                                                          'weightPerBultoKg',
+                                                          Number(
+                                                            e.target.value,
+                                                          ),
+                                                        )
+                                                      }
+                                                      className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold text-center text-xs"
+                                                    />
+                                                  </div>
+
+                                                  <div className="sm:col-span-3">
+                                                    <label
+                                                      htmlFor={`pallet-loc-${realIdx}-${pIdx}`}
+                                                      className="block text-slate-400 mb-1 text-[11px]"
+                                                    >
+                                                      Ubicación Destino *
+                                                    </label>
+                                                    <div className="space-y-1">
+                                                      <input
+                                                        type="text"
+                                                        placeholder="🔍 Filtrar..."
+                                                        value={
+                                                          phase2LocationSearches[
+                                                            keySearch
+                                                          ] || ''
+                                                        }
+                                                        onChange={(e) =>
+                                                          setPhase2LocationSearches(
+                                                            (prev) => ({
+                                                              ...prev,
+                                                              [keySearch]:
+                                                                e.target.value,
+                                                            }),
+                                                          )
+                                                        }
+                                                        className="w-full bg-slate-950 border border-slate-800 p-1 rounded text-white text-[11px]"
+                                                      />
+                                                      <select
+                                                        id={`pallet-loc-${realIdx}-${pIdx}`}
+                                                        value={
+                                                          pallet.locationId
+                                                        }
+                                                        onChange={(e) =>
+                                                          handleUpdatePalletItem(
+                                                            realIdx,
+                                                            pIdx,
+                                                            'locationId',
+                                                            e.target.value,
+                                                          )
+                                                        }
+                                                        className="w-full bg-slate-950 border border-amber-500/40 p-1.5 rounded text-white font-bold text-xs"
+                                                      >
+                                                        {filteredLocList.length >
+                                                        0 ? (
+                                                          filteredLocList.map(
+                                                            (loc) => (
+                                                              <option
+                                                                key={loc.id}
+                                                                value={loc.id}
+                                                              >
+                                                                {loc.code} (
+                                                                {loc.zoneName})
+                                                              </option>
+                                                            ),
+                                                          )
+                                                        ) : (
+                                                          <option value="">
+                                                            Sin ubicaciones
+                                                          </option>
+                                                        )}
+                                                      </select>
+                                                    </div>
+                                                  </div>
+                                                </div>
+
+                                                <div className="flex justify-end gap-2 border-t border-slate-800/60 pt-2">
+                                                  <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                      setPrintModalData({
+                                                        productSku:
+                                                          pallet.childSku ||
+                                                          item.sku,
+                                                        productName:
+                                                          item.description,
+                                                        quantityBultos:
+                                                          pallet.quantityBultos,
+                                                        locationCode:
+                                                          locations.find(
+                                                            (l) =>
+                                                              l.id ===
+                                                              pallet.locationId,
+                                                          )?.code || 'S/U',
+                                                        warehouseName:
+                                                          simpleWarehousesList.find(
+                                                            (w) =>
+                                                              w.id ===
+                                                              dischargeWarehouseId,
+                                                          )?.name,
+                                                        date: generalEntryDate,
+                                                      })
+                                                    }
+                                                    className="px-2.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded text-[10px]"
+                                                  >
+                                                    Rótulo A4
+                                                  </button>
+
+                                                  {item.pallets.length > 1 && (
+                                                    <button
+                                                      type="button"
+                                                      onClick={() =>
+                                                        handleRemovePalletFromItem(
+                                                          realIdx,
+                                                          pIdx,
+                                                        )
+                                                      }
+                                                      aria-label={`Eliminar Pallet #${pallet.palletIndex}`}
+                                                      className="px-2 py-1.5 bg-red-950 border border-red-800 text-red-400 hover:bg-red-900 rounded font-bold text-xs"
+                                                    >
+                                                      X
+                                                    </button>
+                                                  )}
+                                                </div>
+                                              </div>
+                                            );
+                                          },
+                                        )}
+                                      </div>
                                     </div>
-                                  </div>
-                                )}
+                                  )}
                               </div>
                             );
                           })}
@@ -2175,9 +2592,7 @@ export default function InventoryPage() {
               </section>
             )}
 
-            {/* ------------------------------------------------------------------ */}
             {/* TAB: HISTORIAL */}
-            {/* ------------------------------------------------------------------ */}
             {activeTab === 'HISTORIAL' && (
               <section className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
                 <div className="flex flex-wrap justify-between items-center gap-3 border-b border-slate-800 pb-3">
@@ -2344,9 +2759,7 @@ export default function InventoryPage() {
               </section>
             )}
 
-            {/* ------------------------------------------------------------------ */}
             {/* TAB: STOCK & RÓTULOS */}
-            {/* ------------------------------------------------------------------ */}
             {activeTab === 'STOCK' && (
               <section className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
                 <div className="flex flex-wrap justify-between items-center gap-3 border-b border-slate-800 pb-3">
@@ -2516,9 +2929,7 @@ export default function InventoryPage() {
               </section>
             )}
 
-            {/* ------------------------------------------------------------------ */}
-            {/* TAB: CONFIGURACIÓN Y MANTENIMIENTO MASIVO */}
-            {/* ------------------------------------------------------------------ */}
+            {/* TAB: MANTENIMIENTO */}
             {activeTab === 'CONFIG' && (
               <section className="space-y-6">
                 <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
@@ -2567,8 +2978,12 @@ export default function InventoryPage() {
                       <select
                         id="gen-target-wh-select"
                         value={targetConfigWhId}
-                        onChange={(e) => setTargetConfigWhId(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white font-bold"
+                        onChange={(e) => {
+                          const id = e.target.value;
+                          setTargetConfigWhId(id);
+                          loadLocationsForWarehouse(id);
+                        }}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-amber-400 font-bold"
                       >
                         {simpleWarehousesList.map((w) => (
                           <option key={w.id} value={w.id}>
@@ -2578,13 +2993,13 @@ export default function InventoryPage() {
                       </select>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-3 text-xs">
+                    <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label
                           htmlFor="gen-category-select"
-                          className="block text-slate-400 mb-1"
+                          className="block text-xs text-slate-300 mb-1"
                         >
-                          Estructura
+                          Categoría
                         </label>
                         <select
                           id="gen-category-select"
@@ -2594,333 +3009,282 @@ export default function InventoryPage() {
                               e.target.value as LocationTypeCategory,
                             )
                           }
-                          className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-white font-bold"
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white"
                         >
-                          <option value="RACK">Rack (Pared / Módulos)</option>
-                          <option value="PASILLO">Pasillo Especial</option>
-                          <option value="TECHO">Techo</option>
+                          <option value="RACK">RACK</option>
+                          <option value="PASILLO">PASILLO</option>
+                          <option value="TECHO">TECHO</option>
                         </select>
                       </div>
 
                       <div>
                         <label
-                          htmlFor="gen-capacity-input"
-                          className="block text-slate-400 mb-1"
+                          htmlFor="gen-area-input"
+                          className="block text-xs text-slate-300 mb-1"
                         >
-                          Capacidad m³ por Ubicación
+                          Área / Nombre
                         </label>
                         <input
-                          id="gen-capacity-input"
-                          type="number"
-                          step="0.1"
-                          min="0.1"
-                          value={genCapacityM3}
-                          onChange={(e) =>
-                            setGenCapacityM3(Number(e.target.value))
-                          }
-                          className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-white font-bold"
+                          id="gen-area-input"
+                          type="text"
+                          value={genAreaName}
+                          onChange={(e) => setGenAreaName(e.target.value)}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white"
                         />
                       </div>
                     </div>
 
-                    <div>
-                      <label
-                        htmlFor="gen-area-name-input"
-                        className="block text-xs text-slate-400 mb-1"
-                      >
-                        Nombre del Área / Rack
-                      </label>
-                      <input
-                        id="gen-area-name-input"
-                        type="text"
-                        value={genAreaName}
-                        onChange={(e) => setGenAreaName(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white font-bold"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3 text-xs">
+                    <div className="grid grid-cols-3 gap-3">
                       <div>
                         <label
                           htmlFor="gen-levels-input"
-                          className="block text-slate-400 mb-1"
+                          className="block text-xs text-slate-300 mb-1"
                         >
-                          Niveles (Comas)
+                          Niveles (Letras)
                         </label>
                         <input
                           id="gen-levels-input"
                           type="text"
                           value={genLevelsInput}
                           onChange={(e) => setGenLevelsInput(e.target.value)}
-                          className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-white font-bold"
+                          placeholder="A, B, C"
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white text-center font-bold"
                         />
                       </div>
 
                       <div>
-                        <span className="block text-slate-400 mb-1">
-                          Rangos (Inicio - Fin)
-                        </span>
-                        <div className="flex gap-2">
-                          <input
-                            aria-label="Posición de Inicio"
-                            type="number"
-                            value={genPosStart}
-                            onChange={(e) =>
-                              setGenPosStart(Number(e.target.value))
-                            }
-                            className="w-1/2 bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-white font-bold text-center"
-                          />
-                          <input
-                            aria-label="Posición de Fin"
-                            type="number"
-                            value={genPosEnd}
-                            onChange={(e) =>
-                              setGenPosEnd(Number(e.target.value))
-                            }
-                            className="w-1/2 bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-white font-bold text-center"
-                          />
-                        </div>
+                        <label
+                          htmlFor="gen-start-input"
+                          className="block text-xs text-slate-300 mb-1"
+                        >
+                          Posición Inicio
+                        </label>
+                        <input
+                          id="gen-start-input"
+                          type="number"
+                          value={genPosStart}
+                          onChange={(e) =>
+                            setGenPosStart(Number(e.target.value))
+                          }
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white text-center font-bold"
+                        />
                       </div>
+
+                      <div>
+                        <label
+                          htmlFor="gen-end-input"
+                          className="block text-xs text-slate-300 mb-1"
+                        >
+                          Posición Fin
+                        </label>
+                        <input
+                          id="gen-end-input"
+                          type="number"
+                          value={genPosEnd}
+                          onChange={(e) => setGenPosEnd(Number(e.target.value))}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white text-center font-bold"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="gen-capacity-input"
+                        className="block text-xs text-slate-300 mb-1"
+                      >
+                        Capacidad Máxima por Posición (m³)
+                      </label>
+                      <input
+                        id="gen-capacity-input"
+                        type="number"
+                        step="0.1"
+                        value={genCapacityM3}
+                        onChange={(e) =>
+                          setGenCapacityM3(Number(e.target.value))
+                        }
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-amber-400 font-bold"
+                      />
                     </div>
 
                     <button
                       type="button"
                       onClick={handleGenerateBatch}
                       disabled={submitting}
-                      className="w-full py-3.5 bg-amber-500 text-slate-950 font-black rounded-xl text-xs disabled:opacity-50"
+                      className="w-full py-3 bg-amber-500 text-slate-950 font-black rounded-xl text-xs hover:bg-amber-400 transition-colors disabled:opacity-50"
                     >
-                      GENERAR LOTE DE UBICACIONES
+                      GENERAR POSICIONES EN LOTE
                     </button>
                   </div>
 
-                  {/* MANTENIMIENTO MASIVO CON GUARDADO DE CAPACIDADES */}
-                  <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4 flex flex-col justify-between">
-                    <div className="space-y-4">
-                      <div className="flex justify-between items-center border-b border-slate-800 pb-2">
-                        <h2 className="text-base font-bold text-amber-400">
-                          Mantenimiento Masivo
-                        </h2>
-                        <button
-                          type="button"
-                          onClick={handleDeleteFullWarehouse}
-                          className="px-2.5 py-1 bg-red-950 border border-red-800 text-red-400 hover:bg-red-900 rounded text-[11px] font-bold"
+                  {/* TABLA DE UBICACIONES Y EDICIÓN MASIVA */}
+                  <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
+                    <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                      <h2 className="text-base font-bold text-amber-400">
+                        Ubicaciones Existentes ({locations.length})
+                      </h2>
+                      <button
+                        type="button"
+                        onClick={handleDeleteFullWarehouse}
+                        className="px-2.5 py-1 bg-red-950 text-red-400 border border-red-800 hover:bg-red-900 rounded font-bold text-[10px]"
+                      >
+                        Eliminar Depósito
+                      </button>
+                    </div>
+
+                    <div className="flex flex-wrap justify-between items-center gap-2">
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={selectedAreaFilter}
+                          onChange={(e) => {
+                            setSelectedAreaFilter(e.target.value);
+                            setConfigPage(1);
+                          }}
+                          className="bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white font-bold"
                         >
-                          Borrar Depósito Completo
-                        </button>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                        <div>
-                          <label
-                            htmlFor="filter-maint-wh-select"
-                            className="block text-slate-400 mb-1 font-bold"
-                          >
-                            1. Filtrar Depósito
-                          </label>
-                          <select
-                            id="filter-maint-wh-select"
-                            value={targetConfigWhId}
-                            onChange={(e) =>
-                              setTargetConfigWhId(e.target.value)
-                            }
-                            className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-white font-bold"
-                          >
-                            {simpleWarehousesList.map((w) => (
-                              <option key={w.id} value={w.id}>
-                                {w.name}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div>
-                          <label
-                            htmlFor="filter-maint-area-select"
-                            className="block text-slate-400 mb-1 font-bold"
-                          >
-                            2. Filtrar Bloque / Área
-                          </label>
-                          <select
-                            id="filter-maint-area-select"
-                            value={selectedAreaFilter}
-                            onChange={(e) => {
-                              setSelectedAreaFilter(e.target.value);
-                              setConfigPage(1);
-                            }}
-                            className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-white font-bold"
-                          >
-                            <option value="ALL">
-                              Todos los Bloques ({locations.length} pos)
+                          <option value="ALL">Todas las Áreas</option>
+                          {availableAreasInWarehouse.map((area) => (
+                            <option key={area} value={area}>
+                              {area}
                             </option>
-                            {availableAreasInWarehouse.map((area) => (
-                              <option key={area} value={area}>
-                                {area} (
-                                {
-                                  locations.filter((l) => l.zoneName === area)
-                                    .length
-                                }{' '}
-                                pos)
-                              </option>
-                            ))}
-                          </select>
-                        </div>
+                          ))}
+                        </select>
                       </div>
 
-                      <div className="flex justify-between items-center text-xs pt-2 border-t border-slate-800">
-                        <button
-                          type="button"
-                          onClick={handleToggleSelectAllLocations}
-                          className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold rounded-lg border border-slate-700"
-                        >
-                          {visibleLocationsInMaintenance.length > 0 &&
-                          visibleLocationsInMaintenance.every((l) =>
-                            selectedLocIdsForDelete.includes(l.id),
-                          )
-                            ? '☑ Desmarcar Todo'
-                            : '☐ Seleccionar Todo (Visibles)'}
-                        </button>
-                        <span className="text-slate-400 font-bold">
-                          {selectedLocIdsForDelete.length} Seleccionadas
-                        </span>
+                      <div className="flex gap-2">
+                        {Object.keys(editedCapacities).length > 0 && (
+                          <button
+                            type="button"
+                            onClick={handleSaveCapacityChanges}
+                            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded text-xs"
+                          >
+                            Guardar Cambios Capacidad
+                          </button>
+                        )}
+
+                        {selectedLocIdsForDelete.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={handleDeleteSelectedLocations}
+                            className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white font-bold rounded text-xs"
+                          >
+                            Eliminar ({selectedLocIdsForDelete.length})
+                          </button>
+                        )}
                       </div>
+                    </div>
 
-                      <div className="space-y-2">
-                        {paginatedLocations.map((loc) => {
-                          const isSelected = selectedLocIdsForDelete.includes(
-                            loc.id,
-                          );
-                          const currentCapValue =
-                            editedCapacities[loc.id] !== undefined
-                              ? editedCapacities[loc.id]
-                              : loc.maxCapacityM3;
-
-                          return (
-                            <div
-                              key={loc.id}
-                              className={`p-2.5 rounded-xl border flex items-center justify-between text-xs ${
-                                isSelected
-                                  ? 'bg-red-950/30 border-red-500'
-                                  : editedCapacities[loc.id] !== undefined
-                                    ? 'bg-amber-950/30 border-amber-500'
-                                    : 'bg-slate-950 border-slate-800'
-                              }`}
-                            >
-                              <label
-                                htmlFor={`select-loc-checkbox-${loc.id}`}
-                                className="flex items-center gap-3 cursor-pointer flex-1"
-                              >
+                    <div className="overflow-x-auto max-h-[350px] border border-slate-800 rounded-xl">
+                      <table className="w-full text-xs text-left text-slate-300">
+                        <thead className="bg-slate-950 text-slate-400 uppercase font-bold sticky top-0 border-b border-slate-800">
+                          <tr>
+                            <th className="p-2.5 w-10 text-center">
+                              <input
+                                type="checkbox"
+                                checked={
+                                  visibleLocationsInMaintenance.length > 0 &&
+                                  visibleLocationsInMaintenance.every((l) =>
+                                    selectedLocIdsForDelete.includes(l.id),
+                                  )
+                                }
+                                onChange={handleToggleSelectAllLocations}
+                                className="w-4 h-4 accent-amber-500 rounded cursor-pointer"
+                              />
+                            </th>
+                            <th className="p-2.5">Código Posición</th>
+                            <th className="p-2.5">Área / Zona</th>
+                            <th className="p-2.5">Nivel</th>
+                            <th className="p-2.5 text-center">
+                              Capacidad (m³)
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800">
+                          {paginatedLocations.map((loc) => (
+                            <tr key={loc.id} className="hover:bg-slate-950/50">
+                              <td className="p-2.5 text-center">
                                 <input
-                                  id={`select-loc-checkbox-${loc.id}`}
                                   type="checkbox"
-                                  checked={isSelected}
-                                  onChange={() => {
-                                    setSelectedLocIdsForDelete((prev) =>
-                                      prev.includes(loc.id)
-                                        ? prev.filter((id) => id !== loc.id)
-                                        : [...prev, loc.id],
-                                    );
+                                  checked={selectedLocIdsForDelete.includes(
+                                    loc.id,
+                                  )}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setSelectedLocIdsForDelete((prev) => [
+                                        ...prev,
+                                        loc.id,
+                                      ]);
+                                    } else {
+                                      setSelectedLocIdsForDelete((prev) =>
+                                        prev.filter((id) => id !== loc.id),
+                                      );
+                                    }
                                   }}
-                                  aria-label={`Seleccionar ubicación ${loc.code}`}
-                                  className="accent-red-500 w-4 h-4"
+                                  className="w-4 h-4 accent-amber-500 rounded cursor-pointer"
                                 />
-                                <div>
-                                  <strong className="text-white block font-mono">
-                                    {loc.code}
-                                  </strong>
-                                  <span className="text-slate-400 text-[10px]">
-                                    {loc.zoneName}
-                                  </span>
-                                </div>
-                              </label>
-
-                              <div className="flex items-center gap-2">
-                                <label
-                                  htmlFor={`cap-input-${loc.id}`}
-                                  className="text-[10px] text-slate-400 font-bold"
-                                >
-                                  Capacidad m³:
-                                </label>
+                              </td>
+                              <td className="p-2.5 font-mono font-bold text-amber-400">
+                                {loc.code}
+                              </td>
+                              <td className="p-2.5">{loc.zoneName}</td>
+                              <td className="p-2.5 font-bold text-center">
+                                {loc.rackLevel}
+                              </td>
+                              <td className="p-2.5 text-center">
                                 <input
-                                  id={`cap-input-${loc.id}`}
                                   type="number"
                                   step="0.1"
-                                  min="0.1"
-                                  value={currentCapValue}
-                                  onChange={(e) => {
-                                    const val = Number(e.target.value);
+                                  value={
+                                    editedCapacities[loc.id] !== undefined
+                                      ? editedCapacities[loc.id]
+                                      : loc.maxCapacityM3
+                                  }
+                                  onChange={(e) =>
                                     setEditedCapacities((prev) => ({
                                       ...prev,
-                                      [loc.id]: val,
-                                    }));
-                                  }}
-                                  className="w-16 bg-slate-900 border border-slate-800 px-2 py-1 rounded text-amber-400 font-bold text-center text-xs"
+                                      [loc.id]: Number(e.target.value),
+                                    }))
+                                  }
+                                  className="w-20 bg-slate-950 border border-slate-800 p-1 text-center font-bold text-amber-300 rounded"
                                 />
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
 
-                      {visibleLocationsInMaintenance.length >
-                        ITEMS_PER_PAGE && (
-                        <div className="flex justify-between items-center text-xs pt-2 border-t border-slate-800">
-                          <span className="text-slate-400">
-                            Pág. {configPage} de{' '}
-                            {Math.ceil(
-                              visibleLocationsInMaintenance.length /
-                                ITEMS_PER_PAGE,
-                            )}
+                    {visibleLocationsInMaintenance.length > ITEMS_PER_PAGE && (
+                      <div className="flex justify-between items-center text-xs pt-2">
+                        <span className="text-slate-400">
+                          Mostrando {paginatedLocations.length} de{' '}
+                          {visibleLocationsInMaintenance.length} ubicaciones
+                        </span>
+                        <div className="flex gap-1">
+                          <button
+                            type="button"
+                            disabled={configPage === 1}
+                            onClick={() => setConfigPage((p) => p - 1)}
+                            className="px-2.5 py-1 bg-slate-800 disabled:opacity-50 text-white rounded font-bold"
+                          >
+                            Anterior
+                          </button>
+                          <span className="px-2.5 py-1 bg-slate-950 text-amber-400 font-mono font-bold rounded">
+                            Pág. {configPage}
                           </span>
-                          <div className="flex gap-1">
-                            <button
-                              type="button"
-                              disabled={configPage === 1}
-                              onClick={() => setConfigPage((p) => p - 1)}
-                              className="px-2 py-1 bg-slate-800 text-white rounded font-bold disabled:opacity-50"
-                            >
-                              Prev
-                            </button>
-                            <button
-                              type="button"
-                              disabled={
-                                configPage * ITEMS_PER_PAGE >=
-                                visibleLocationsInMaintenance.length
-                              }
-                              onClick={() => setConfigPage((p) => p + 1)}
-                              className="px-2 py-1 bg-slate-800 text-white rounded font-bold disabled:opacity-50"
-                            >
-                              Sig
-                            </button>
-                          </div>
+                          <button
+                            type="button"
+                            disabled={
+                              configPage * ITEMS_PER_PAGE >=
+                              visibleLocationsInMaintenance.length
+                            }
+                            onClick={() => setConfigPage((p) => p + 1)}
+                            className="px-2.5 py-1 bg-slate-800 disabled:opacity-50 text-white rounded font-bold"
+                          >
+                            Siguiente
+                          </button>
                         </div>
-                      )}
-                    </div>
-
-                    <div className="space-y-2 mt-4">
-                      {editedCapacitiesCount > 0 && (
-                        <button
-                          type="button"
-                          onClick={handleSaveCapacityChanges}
-                          disabled={submitting}
-                          className="w-full py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black rounded-xl text-xs shadow-lg disabled:opacity-50"
-                        >
-                          💾 GUARDAR {editedCapacitiesCount} CAMBIO(S) DE
-                          CAPACIDAD
-                        </button>
-                      )}
-
-                      {selectedLocIdsForDelete.length > 0 && (
-                        <button
-                          type="button"
-                          onClick={handleDeleteSelectedLocations}
-                          disabled={submitting}
-                          className="w-full py-3 bg-red-600 text-white font-black rounded-xl text-xs shadow-lg disabled:opacity-50"
-                        >
-                          ELIMINAR {selectedLocIdsForDelete.length} POSICIONES
-                          SELECCIONADAS
-                        </button>
-                      )}
-                    </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               </section>
@@ -2928,260 +3292,13 @@ export default function InventoryPage() {
           </>
         )}
 
-        {/* ------------------------------------------------------------------ */}
-        {/* MODAL DETALLE DE CONTENEDOR AUDITADO */}
-        {/* ------------------------------------------------------------------ */}
-        {selectedContainerDetail && (
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="modal-container-title"
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
-          >
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-3xl overflow-hidden shadow-2xl p-6 space-y-4">
-              <div className="flex justify-between items-center border-b border-slate-800 pb-3">
-                <div>
-                  <h2
-                    id="modal-container-title"
-                    className="text-lg font-black text-amber-400"
-                  >
-                    Detalle del Contenedor:{' '}
-                    {selectedContainerDetail.containerNumber}
-                  </h2>
-                  <p className="text-xs text-slate-400">
-                    Depósito: {selectedContainerDetail.warehouseName} | Arribo:{' '}
-                    {new Date(
-                      selectedContainerDetail.arrivalDate,
-                    ).toLocaleDateString('es-AR')}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setSelectedContainerDetail(null)}
-                  className="px-3 py-1 bg-slate-800 text-slate-300 font-bold rounded-lg text-xs hover:bg-slate-700"
-                >
-                  Cerrar
-                </button>
-              </div>
-
-              <div className="max-h-[350px] overflow-y-auto">
-                <table className="w-full text-xs text-left text-slate-300">
-                  <thead className="bg-slate-950 text-slate-400 uppercase font-bold border-b border-slate-800">
-                    <tr>
-                      <th className="p-2.5">SKU</th>
-                      <th className="p-2.5">Descripción</th>
-                      <th className="p-2.5 text-center">Bultos</th>
-                      <th className="p-2.5 text-center">
-                        Auditado / Controlado Por
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800">
-                    {selectedContainerDetail.items.map((item) => (
-                      <tr key={item.id}>
-                        <td className="p-2.5 font-mono text-amber-400 font-bold">
-                          {item.sku}
-                        </td>
-                        <td className="p-2.5 text-white">{item.description}</td>
-                        <td className="p-2.5 text-center font-bold">
-                          {item.quantityBultos}
-                        </td>
-                        <td className="p-2.5 text-center">
-                          {item.isControlled ? (
-                            <span className="text-emerald-400 font-bold bg-emerald-950/60 border border-emerald-800 px-2 py-0.5 rounded text-[11px]">
-                              ✓ {item.controlledBy || 'Operario'} (
-                              {item.controlledAt
-                                ? new Date(
-                                    item.controlledAt,
-                                  ).toLocaleDateString('es-AR')
-                                : '-'}
-                              )
-                            </span>
-                          ) : (
-                            <span className="text-amber-400 font-bold bg-amber-950/60 border border-amber-800 px-2 py-0.5 rounded text-[11px]">
-                              Pendiente
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
+        {/* MODAL IMPRESIÓN DE RÓTULOS A4 */}
+        {printModalData && (
+          <PalletLabelModal
+            data={printModalData}
+            onClose={() => setPrintModalData(null)}
+          />
         )}
-
-        {/* ------------------------------------------------------------------ */}
-        {/* MODAL MUDANZA / REUBICACIÓN DE PALLETS */}
-        {/* ------------------------------------------------------------------ */}
-        {relocateItem && (
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="modal-relocate-title"
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
-          >
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 space-y-4">
-              <h2
-                id="modal-relocate-title"
-                className="text-base font-black text-amber-400 border-b border-slate-800 pb-2"
-              >
-                Reubicar Pallet / Mover Stock
-              </h2>
-
-              <div className="text-xs space-y-1 bg-slate-950 p-3 rounded-xl border border-slate-800">
-                <p className="text-white font-bold">
-                  {relocateItem.productName}
-                </p>
-                <p className="text-amber-400 font-mono">
-                  SKU: {relocateItem.productSku}
-                </p>
-              </div>
-
-              <div className="space-y-3 text-xs">
-                <div>
-                  <label
-                    htmlFor="source-inventory-select"
-                    className="block text-slate-300 mb-1 font-bold"
-                  >
-                    1. Seleccionar Posición Origen *
-                  </label>
-                  <select
-                    id="source-inventory-select"
-                    value={selectedSourceInventoryId}
-                    onChange={(e) => {
-                      const selectedInvId = e.target.value;
-                      setSelectedSourceInventoryId(selectedInvId);
-                      const selected = relocateItem.availableSources.find(
-                        (s) => s.inventoryId === selectedInvId,
-                      );
-                      if (selected) {
-                        setRelocateQuantity(selected.quantityBultos);
-                        setRelocateTargetWarehouseId(selected.warehouseId);
-                        setRelocateTargetLocId('');
-                        loadLocationsForWarehouse(selected.warehouseId);
-                      }
-                    }}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-amber-300 font-bold"
-                  >
-                    {relocateItem.availableSources.map((s) => (
-                      <option key={s.inventoryId} value={s.inventoryId}>
-                        {s.locationCode} ({s.warehouseName}) -{' '}
-                        {s.quantityBultos} bu
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label
-                    htmlFor="relocate-quantity-input"
-                    className="block text-slate-300 mb-1 font-bold"
-                  >
-                    2. Cantidad de Bultos a Mover *
-                  </label>
-                  <input
-                    id="relocate-quantity-input"
-                    type="number"
-                    min={1}
-                    value={relocateQuantity}
-                    onChange={(e) =>
-                      setRelocateQuantity(Number(e.target.value))
-                    }
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-amber-300 font-bold text-center"
-                  />
-                </div>
-
-                <div>
-                  <label
-                    htmlFor="relocate-target-warehouse-select"
-                    className="block text-slate-300 mb-1 font-bold"
-                  >
-                    3. Depósito Destino *
-                  </label>
-                  <select
-                    id="relocate-target-warehouse-select"
-                    value={relocateTargetWarehouseId}
-                    onChange={(e) => {
-                      const newWhId = e.target.value;
-                      setRelocateTargetWarehouseId(newWhId);
-                      setRelocateTargetLocId('');
-                      setRelocateSearchLocQuery('');
-                      loadLocationsForWarehouse(newWhId);
-                    }}
-                    className="w-full bg-slate-950 border border-amber-500/50 rounded-xl p-3 text-sm text-amber-300 font-bold"
-                  >
-                    {simpleWarehousesList.map((wh) => (
-                      <option key={wh.id} value={wh.id}>
-                        {wh.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label
-                    htmlFor="relocate-target-select"
-                    className="block text-slate-300 mb-1 font-bold"
-                  >
-                    4. Buscar y Seleccionar Posición Destino *
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="🔍 Buscar por código (ej. b4, rack-2)..."
-                    value={relocateSearchLocQuery}
-                    onChange={(e) => setRelocateSearchLocQuery(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white mb-2 font-mono"
-                  />
-
-                  <select
-                    id="relocate-target-select"
-                    value={relocateTargetLocId}
-                    onChange={(e) => setRelocateTargetLocId(e.target.value)}
-                    className="w-full bg-slate-950 border border-amber-500/50 rounded-xl p-3 text-sm text-white font-bold"
-                  >
-                    <option value="">
-                      -- Seleccionar Posición Destino (
-                      {filteredRelocateLocations.length} disponibles) --
-                    </option>
-                    {filteredRelocateLocations.map((loc) => (
-                      <option key={loc.id} value={loc.id}>
-                        {loc.code} ({loc.zoneName})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={handleConfirmRelocation}
-                  disabled={submitting}
-                  className="flex-1 py-3 bg-amber-500 text-slate-950 font-black rounded-xl text-xs hover:bg-amber-400 disabled:opacity-50"
-                >
-                  CONFIRMAR REUBICACIÓN
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setRelocateItem(null)}
-                  className="px-4 py-3 bg-slate-800 text-slate-300 font-bold rounded-xl text-xs hover:bg-slate-700"
-                >
-                  Cancelar
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ------------------------------------------------------------------ */}
-        {/* MODAL RÓTULO A4 */}
-        {/* ------------------------------------------------------------------ */}
-        <PalletLabelModal
-          data={printModalData}
-          onClose={() => setPrintModalData(null)}
-        />
       </main>
     </ProtectedRoute>
   );
