@@ -74,6 +74,13 @@ enum InboundStatus {
     CANCELADO
 }
 
+enum CustomerType {
+    DISTRIBUTOR
+    RETAILER
+    DIRECT_CONSUMER
+    LOGISTICS_PARTNER
+}
+
 // ==========================================
 // USUARIOS Y ROLES
 // ==========================================
@@ -330,7 +337,11 @@ model Customer {
     legalName      String       @map("legal_name") @db.VarChar(200)
     email          String       @db.VarChar(255)
     phone          String?      @db.VarChar(50)
+    contactPerson  String?      @map("contact_person") @db.VarChar(150)
+    type           CustomerType @default(RETAILER)
     taxCondition   TaxCondition @default(RESPONSABLE_INSCRIPTO) @map("tax_condition")
+    logisticsFee   Decimal      @default(0.00) @map("logistics_fee") @db.Decimal(10, 2)
+    isActive       Boolean      @default(true) @map("is_active")
     transportId    String?      @map("transport_id") @db.Uuid
 
     transport Transport?        @relation(fields: [transportId], references: [id])
@@ -340,6 +351,8 @@ model Customer {
     createdAt DateTime @default(now()) @map("created_at")
     updatedAt DateTime @updatedAt @map("updated_at")
 
+    @@index([cuit])
+    @@index([customerNumber])
     @@map("customers")
 }
 
