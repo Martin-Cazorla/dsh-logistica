@@ -342,7 +342,12 @@ model Customer {
     taxCondition   TaxCondition @default(RESPONSABLE_INSCRIPTO) @map("tax_condition")
     logisticsFee   Decimal      @default(0.00) @map("logistics_fee") @db.Decimal(10, 2)
     isActive       Boolean      @default(true) @map("is_active")
-    transportId    String?      @map("transport_id") @db.Uuid
+
+    // Alertas de Cliente Crítico
+    isCritical     Boolean @default(false) @map("is_critical")
+    criticalReason String? @map("critical_reason") @db.Text
+
+    transportId String? @map("transport_id") @db.Uuid
 
     transport Transport?        @relation(fields: [transportId], references: [id])
     addresses CustomerAddress[]
@@ -353,6 +358,7 @@ model Customer {
 
     @@index([cuit])
     @@index([customerNumber])
+    @@index([isCritical])
     @@map("customers")
 }
 
