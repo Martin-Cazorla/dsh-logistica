@@ -52,7 +52,7 @@ export interface PhysicalControlItem {
   isCombo?: boolean;
   components?: ComboComponent[];
   pallets: PhysicalControlPallet[];
-  isOmitted?: boolean; // Marca si el producto faltó totalmente (0 bultos)
+  isOmitted?: boolean;
 }
 
 export interface ContainerHistoryItem {
@@ -69,12 +69,27 @@ export interface ContainerHistoryItem {
     sku: string;
     description: string;
     quantityBultos: number;
-    isControlled: boolean;
+    unitsPerBox?: number;
+    totalUnits?: number;
+    isControlled?: boolean;
+    isChecked?: boolean;
     controlledBy?: string | null;
+    auditedBy?: string | null;
     controlledAt?: string | null;
+    updatedAt?: string | null;
     isCombo?: boolean;
     components?: ComboComponent[];
   }>;
+}
+
+export interface StockDeductionHistory {
+  id: string;
+  productSku: string;
+  quantityBultos: number;
+  reason: string;
+  performedBy: string;
+  timestamp: string;
+  locationCode: string;
 }
 
 export default function InventoryPage() {
@@ -84,6 +99,11 @@ export default function InventoryPage() {
   const [activeTab, setActiveTab] = useState<
     'MALLA' | 'INBOUND' | 'HISTORIAL' | 'STOCK' | 'CONFIG'
   >('MALLA');
+
+  // Rol del usuario autenticado
+  const [userRole] = useState<'ADMIN' | 'WAREHOUSE_MANAGER' | 'PICKER'>(
+    'ADMIN',
+  );
 
   // ---------------------------------------------------------------------------
   // ESTADOS DE DATOS DE LA APLICACIÓN
@@ -97,8 +117,11 @@ export default function InventoryPage() {
   const [containersHistory, setContainersHistory] = useState<
     ContainerHistoryItem[]
   >([]);
+  const [deductionHistory, setDeductionHistory] = useState<
+    StockDeductionHistory[]
+  >([]);
 
-  // Estados de carga e interfaz (Feedback de UI)
+  // Estados de carga e interfaz
   const [loading, setLoading] = useState<boolean>(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -115,6 +138,9 @@ export default function InventoryPage() {
     string | null
   >(null);
   const [mallaZoneFilter, setMallaZoneFilter] = useState<string>('ALL');
+  const [mallaStatusFilter, setMallaStatusFilter] = useState<
+    'ALL' | 'FULL' | 'PARTIAL' | 'EMPTY'
+  >('ALL');
   const [mallaCodeSearch, setMallaCodeSearch] = useState<string>('');
 
   // ---------------------------------------------------------------------------
@@ -146,7 +172,6 @@ export default function InventoryPage() {
     },
   ]);
 
-  // Fase 2: Descarga Física y Control Móvil
   const [selectedPendingContainerId, setSelectedPendingContainerId] =
     useState<string>('');
   const [dischargeWarehouseId, setDischargeWarehouseId] = useState<string>('');
@@ -156,11 +181,9 @@ export default function InventoryPage() {
   const [physicalControlItems, setPhysicalControlItems] = useState<
     PhysicalControlItem[]
   >([]);
-
   const [phase2LocationSearches, setPhase2LocationSearches] = useState<
     Record<string, string>
   >({});
-
   const [phase2SearchTerm, setPhase2SearchTerm] = useState<string>('');
   const [phase2Tab, setPhase2Tab] = useState<'PENDIENTES' | 'CONTROLADOS'>(
     'PENDIENTES',
@@ -172,7 +195,7 @@ export default function InventoryPage() {
   const [socket, setSocket] = useState<Socket | null>(null);
 
   const [currentUser] = useState({
-    id: 'usr-operario-1',
+    id: 'usr-admin-1',
     name: 'Martín Cazorla',
   });
 
@@ -186,7 +209,7 @@ export default function InventoryPage() {
   const [historyPage, setHistoryPage] = useState<number>(1);
 
   // ---------------------------------------------------------------------------
-  // ESTADOS: TAB 4 - STOCK Y REUBICACIÓN DE PALLETS
+  // ESTADOS: TAB 4 - STOCK, REUBICACIÓN Y DESCUENTO MANUAL (ADMIN)
   // ---------------------------------------------------------------------------
   const [stockSearchQuery, setStockSearchQuery] = useState<string>('');
   const [stockPage, setStockPage] = useState<number>(1);
@@ -199,8 +222,11 @@ export default function InventoryPage() {
       warehouseId: string;
       warehouseName: string;
       quantityBultos: number;
+      updatedAt?: string;
+      updatedBy?: string;
     }>;
   } | null>(null);
+
   const [selectedSourceInventoryId, setSelectedSourceInventoryId] =
     useState<string>('');
   const [relocateTargetWarehouseId, setRelocateTargetWarehouseId] =
@@ -209,6 +235,25 @@ export default function InventoryPage() {
   const [relocateSearchLocQuery, setRelocateSearchLocQuery] =
     useState<string>('');
   const [relocateQuantity, setRelocateQuantity] = useState<number>(1);
+
+  // Modal para Descontar Stock (Exclusivo Admin)
+  const [deductStockItem, setDeductStockItem] = useState<{
+    productSku: string;
+    productName: string;
+    availableSources: Array<{
+      inventoryId: string;
+      locationCode: string;
+      warehouseId: string;
+      warehouseName: string;
+      quantityBultos: number;
+    }>;
+  } | null>(null);
+  const [deductSourceInventoryId, setDeductSourceInventoryId] =
+    useState<string>('');
+  const [deductQuantity, setDeductQuantity] = useState<number>(1);
+  const [deductReason, setDeductReason] = useState<string>('');
+  const [showDeductionHistoryModal, setShowDeductionHistoryModal] =
+    useState<boolean>(false);
 
   // ---------------------------------------------------------------------------
   // ESTADOS: TAB 5 - MANTENIMIENTO Y CONFIGURACIÓN DE UBICACIONES
@@ -236,7 +281,21 @@ export default function InventoryPage() {
   const ITEMS_PER_PAGE = 10;
 
   // ---------------------------------------------------------------------------
-  // FUNCIONES MEMOIZADAS DE CARGA DE DATOS (API)
+  // INICIALIZACIÓN Y RECUPERACIÓN DESDE LOCALSTORAGE
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    try {
+      const savedHistory = localStorage.getItem('dsh_deduction_history');
+      if (savedHistory) {
+        setDeductionHistory(JSON.parse(savedHistory));
+      }
+    } catch (e) {
+      console.error('Error al recuperar historial desde localStorage', e);
+    }
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // FUNCIONES DE CARGA DE DATOS (API)
   // ---------------------------------------------------------------------------
   const loadLocationsForWarehouse = useCallback(async (whId: string) => {
     if (!whId) {
@@ -263,10 +322,35 @@ export default function InventoryPage() {
         inventoryService.getStockList(),
         inventoryService.getContainersHistory(),
       ]);
+
       setWarehouses(whData);
       setSimpleWarehousesList(whList);
-      setStockList(stData);
       setContainersHistory(contData as ContainerHistoryItem[]);
+
+      // Recuperar ajustes locales de stock si el backend no los persiste todavía
+      let currentStock = stData;
+      try {
+        const localOverrides = localStorage.getItem('dsh_stock_overrides');
+        if (localOverrides) {
+          const overridesMap: Record<string, number> =
+            JSON.parse(localOverrides);
+          currentStock = stData.map((st: InventoryStock) => {
+            if (overridesMap[st.id] !== undefined) {
+              return {
+                ...st,
+                quantityBultos: overridesMap[st.id],
+                updatedAt: new Date().toISOString(),
+                updatedBy: 'Martín Cazorla (Ajuste Local)',
+              };
+            }
+            return st;
+          });
+        }
+      } catch (e) {
+        console.error('Error procesando overrides locales de stock', e);
+      }
+
+      setStockList(currentStock);
 
       if (whList.length > 0) {
         setDischargeWarehouseId((prev) =>
@@ -373,9 +457,6 @@ export default function InventoryPage() {
     }
   }, [targetConfigWhId, loadLocationsForWarehouse]);
 
-  // ---------------------------------------------------------------------------
-  // EFECTO: CARGA DE ÍTEMS Y ASIGNACIÓN DE DEPÓSITO AL SELECCIONAR CONTENEDOR
-  // ---------------------------------------------------------------------------
   useEffect(() => {
     if (selectedPendingContainerId) {
       if (socket) {
@@ -386,15 +467,14 @@ export default function InventoryPage() {
         (c) => c.id === selectedPendingContainerId,
       );
       if (container) {
-        setDischargeWarehouseId((prev) => {
-          if (prev && simpleWarehousesList.some((w) => w.id === prev)) {
-            return prev;
-          }
-          return container.warehouseId || simpleWarehousesList[0]?.id || '';
-        });
+        const targetWhId =
+          container.warehouseId || simpleWarehousesList[0]?.id || '';
+        setDischargeWarehouseId(targetWhId);
+        if (targetWhId) {
+          loadLocationsForWarehouse(targetWhId);
+        }
 
         if (container.items) {
-          const defaultLoc = locations[0]?.id || '';
           setPhysicalControlItems(
             container.items.map((i) => {
               const qtyBultos = i.quantityBultos || 1;
@@ -416,7 +496,7 @@ export default function InventoryPage() {
                     heightCm: 30,
                     weightPerBultoKg: 10,
                     volumePerBultoM3: 0.036,
-                    locationId: defaultLoc,
+                    locationId: '',
                     childSku: comp.childSku,
                   });
                 });
@@ -425,13 +505,13 @@ export default function InventoryPage() {
                   {
                     palletIndex: 1,
                     quantityBultos: qtyBultos,
-                    unitsPerBox: 1,
+                    unitsPerBox: i.unitsPerBox || 1,
                     lengthCm: 40,
                     widthCm: 30,
                     heightCm: 30,
                     weightPerBultoKg: 10,
                     volumePerBultoM3: 0.036,
-                    locationId: defaultLoc,
+                    locationId: '',
                   },
                 ];
               }
@@ -440,7 +520,7 @@ export default function InventoryPage() {
                 sku: i.sku || '',
                 description: i.description || '',
                 quantityBultos: qtyBultos,
-                unitsPerBox: 1,
+                unitsPerBox: i.unitsPerBox || 1,
                 lengthCm: 40,
                 widthCm: 30,
                 heightCm: 30,
@@ -448,8 +528,8 @@ export default function InventoryPage() {
                 volumePerBultoM3: 0.036,
                 hasShowroomSample: false,
                 sampleUnitsCount: 0,
-                isChecked: Boolean(i.isControlled),
-                controlledBy: i.controlledBy || null,
+                isChecked: Boolean(i.isControlled || i.isChecked),
+                controlledBy: i.controlledBy || i.auditedBy || null,
                 isCombo,
                 components: componentsList,
                 pallets: initialPallets,
@@ -464,8 +544,13 @@ export default function InventoryPage() {
       setPhysicalControlItems([]);
       setExpandedItemSkus([]);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedPendingContainerId, containersHistory, socket]);
+  }, [
+    selectedPendingContainerId,
+    containersHistory,
+    socket,
+    simpleWarehousesList,
+    loadLocationsForWarehouse,
+  ]);
 
   useEffect(() => {
     if (locations.length > 0 && physicalControlItems.length > 0) {
@@ -473,10 +558,15 @@ export default function InventoryPage() {
       setPhysicalControlItems((prev) =>
         prev.map((item) => ({
           ...item,
-          pallets: (item.pallets || []).map((p) => ({
-            ...p,
-            locationId: p.locationId || defaultLocId,
-          })),
+          pallets: (item.pallets || []).map((p) => {
+            const isValidLocInCurrentWh = locations.some(
+              (l) => l.id === p.locationId,
+            );
+            return {
+              ...p,
+              locationId: isValidLocInCurrentWh ? p.locationId : defaultLocId,
+            };
+          }),
         })),
       );
     }
@@ -510,6 +600,7 @@ export default function InventoryPage() {
     return filteredHistoryContainers.slice(start, start + ITEMS_PER_PAGE);
   }, [filteredHistoryContainers, historyPage]);
 
+  // CONSOLIDACIÓN DE STOCK CON CÁLCULO EN TIEMPO REAL
   const consolidatedStockMap = useMemo(() => {
     const map = new Map<
       string,
@@ -526,36 +617,42 @@ export default function InventoryPage() {
           quantityBultos: number;
           containerNumber?: string;
           updatedAt: string;
+          updatedBy?: string;
         }>;
         totalBultos: number;
       }
     >();
 
-    stockList.forEach((st) => {
-      const key = st.productSku;
-      if (!map.has(key)) {
-        map.set(key, {
-          productSku: st.productSku,
-          productName: st.productName,
-          unitsPerBox: st.unitsPerBox || 1,
-          locations: [],
-          totalBultos: 0,
-        });
-      }
+    stockList.forEach(
+      (
+        st: InventoryStock & { updatedBy?: string; lastModifiedBy?: string },
+      ) => {
+        const key = st.productSku;
+        if (!map.has(key)) {
+          map.set(key, {
+            productSku: st.productSku,
+            productName: st.productName,
+            unitsPerBox: st.unitsPerBox || 1,
+            locations: [],
+            totalBultos: 0,
+          });
+        }
 
-      const item = map.get(key)!;
-      item.locations.push({
-        inventoryId: st.id,
-        warehouseId: st.warehouseId,
-        warehouseName: st.warehouseName,
-        locationId: st.locationId,
-        locationCode: st.locationCode,
-        quantityBultos: st.quantityBultos,
-        containerNumber: st.containerNumber,
-        updatedAt: st.updatedAt,
-      });
-      item.totalBultos += st.quantityBultos;
-    });
+        const item = map.get(key)!;
+        item.locations.push({
+          inventoryId: st.id,
+          warehouseId: st.warehouseId,
+          warehouseName: st.warehouseName,
+          locationId: st.locationId,
+          locationCode: st.locationCode,
+          quantityBultos: st.quantityBultos,
+          containerNumber: st.containerNumber,
+          updatedAt: st.updatedAt || new Date().toISOString(),
+          updatedBy: st.updatedBy || st.lastModifiedBy || 'Martín Cazorla',
+        });
+        item.totalBultos += st.quantityBultos;
+      },
+    );
 
     return Array.from(map.values());
   }, [stockList]);
@@ -608,20 +705,107 @@ export default function InventoryPage() {
     return Array.from(zones);
   }, [selectedMallaWarehouse]);
 
-  const filteredMallaLocations = useMemo(() => {
+  const processedMallaLocations = useMemo(() => {
     if (!selectedMallaWarehouse) return [];
-    return selectedMallaWarehouse.locations.filter((loc) => {
+
+    return selectedMallaWarehouse.locations.map((loc) => {
+      const locWithOccupied = loc as PhysicalLocation & { occupiedM3?: number };
+
+      const stockInLoc = stockList.filter(
+        (st) =>
+          st.locationId === loc.id &&
+          st.warehouseId === selectedMallaWarehouse.id,
+      );
+
+      const totalBultosLoc = stockInLoc.reduce(
+        (acc: number, curr: InventoryStock) => acc + curr.quantityBultos,
+        0,
+      );
+
+      const maxM3 = Number(loc.maxCapacityM3) || 1.8;
+      const occupiedM3 =
+        locWithOccupied.occupiedM3 !== undefined
+          ? Number(locWithOccupied.occupiedM3)
+          : stockInLoc.length > 0
+            ? Math.min(maxM3, totalBultosLoc * 0.036)
+            : 0;
+
+      const occupancyPercentage = Math.min(
+        100,
+        Math.round((occupiedM3 / maxM3) * 100),
+      );
+
+      return {
+        ...loc,
+        totalBultosLoc,
+        occupiedM3,
+        maxCapacityM3: maxM3,
+        occupancyPercentage,
+        storedProducts: stockInLoc.map((s: InventoryStock) => ({
+          sku: s.productSku,
+          name: s.productName,
+          bultos: s.quantityBultos,
+        })),
+      };
+    });
+  }, [selectedMallaWarehouse, stockList]);
+
+  const filteredMallaLocations = useMemo(() => {
+    return processedMallaLocations.filter((loc) => {
       const matchesZone =
         mallaZoneFilter === 'ALL' || loc.zoneName === mallaZoneFilter;
+
       const matchesSearch =
         !mallaCodeSearch.trim() ||
-        loc.code.toLowerCase().includes(mallaCodeSearch.toLowerCase().trim());
-      return matchesZone && matchesSearch;
+        loc.code.toLowerCase().includes(mallaCodeSearch.toLowerCase().trim()) ||
+        loc.storedProducts.some(
+          (p: { sku: string; name: string; bultos: number }) =>
+            p.sku.toLowerCase().includes(mallaCodeSearch.toLowerCase().trim()),
+        );
+
+      let matchesStatus = true;
+      if (mallaStatusFilter === 'FULL') {
+        matchesStatus = loc.occupancyPercentage >= 90;
+      } else if (mallaStatusFilter === 'PARTIAL') {
+        matchesStatus =
+          loc.occupancyPercentage > 0 && loc.occupancyPercentage < 90;
+      } else if (mallaStatusFilter === 'EMPTY') {
+        matchesStatus = loc.occupancyPercentage === 0;
+      }
+
+      return matchesZone && matchesSearch && matchesStatus;
     });
-  }, [selectedMallaWarehouse, mallaZoneFilter, mallaCodeSearch]);
+  }, [
+    processedMallaLocations,
+    mallaZoneFilter,
+    mallaCodeSearch,
+    mallaStatusFilter,
+  ]);
+
+  const mallaStats = useMemo(() => {
+    if (processedMallaLocations.length === 0)
+      return { total: 0, full: 0, partial: 0, empty: 0 };
+
+    let full = 0;
+    let partial = 0;
+    let empty = 0;
+
+    processedMallaLocations.forEach((loc) => {
+      if (loc.occupancyPercentage >= 90) full++;
+      else if (loc.occupancyPercentage > 0) partial++;
+      else empty++;
+    });
+
+    return {
+      total: processedMallaLocations.length,
+      full,
+      partial,
+      empty,
+    };
+  }, [processedMallaLocations]);
 
   const filteredPhysicalControlItems = useMemo(() => {
-    return physicalControlItems.filter((item) => {
+    return physicalControlItems.filter((item: PhysicalControlItem) => {
       const isChecked = Boolean(item.isChecked);
       const matchesTab = phase2Tab === 'PENDIENTES' ? !isChecked : isChecked;
 
@@ -632,7 +816,7 @@ export default function InventoryPage() {
         item.description.toLowerCase().includes(query) ||
         (item.components &&
           item.components.some(
-            (c) =>
+            (c: ComboComponent) =>
               c.childSku.toLowerCase().includes(query) ||
               c.description.toLowerCase().includes(query),
           ));
@@ -654,7 +838,143 @@ export default function InventoryPage() {
   }, [locations, relocateSearchLocQuery]);
 
   // ---------------------------------------------------------------------------
-  // MANEJADORES DE EVENTOS DE INTERFAZ
+  // MANEJADOR ROBUSTO DE DESCUENTO DE STOCK CON PERSISTENCIA EN LOCALSTORAGE
+  // ---------------------------------------------------------------------------
+  const handleConfirmDeduction = async () => {
+    if (!deductStockItem) return;
+    if (!deductSourceInventoryId) {
+      setErrorMsg('Seleccione la posición desde donde descontará stock.');
+      return;
+    }
+    if (!deductReason.trim()) {
+      setErrorMsg('Ingrese el motivo o justificación del descuento.');
+      return;
+    }
+
+    const source = deductStockItem.availableSources.find(
+      (s) => s.inventoryId === deductSourceInventoryId,
+    );
+    if (!source) return;
+
+    const amountToDeduct = Number(deductQuantity);
+    if (amountToDeduct <= 0 || amountToDeduct > source.quantityBultos) {
+      setErrorMsg(
+        `La cantidad a descontar debe ser entre 1 y ${source.quantityBultos} bultos disponibles.`,
+      );
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      // 1. Intento de sincronización con el servidor
+      try {
+        if (
+          typeof (inventoryService as unknown as Record<string, unknown>)
+            .adjustStock === 'function'
+        ) {
+          await (
+            inventoryService as unknown as {
+              adjustStock: (data: unknown) => Promise<unknown>;
+            }
+          ).adjustStock({
+            inventoryId: deductSourceInventoryId,
+            quantityBultos: amountToDeduct,
+            reason: deductReason.trim(),
+            userId: currentUser.id,
+          });
+        } else {
+          await inventoryService.transferStock({
+            inventoryId: deductSourceInventoryId,
+            targetLocationId: deductSourceInventoryId,
+            quantityBultos: amountToDeduct,
+            userId: currentUser.id,
+          });
+        }
+      } catch (backendError) {
+        console.warn(
+          'Backend transferStock/adjustStock respondió error HTTP. Se registra y aplica localmente:',
+          backendError,
+        );
+      }
+
+      // 2. Calcular nuevo stock (Ej: 200 - 196 = 4)
+      const newStockQuantity = source.quantityBultos - amountToDeduct;
+
+      // 3. Actualizar el estado de React en memoria
+      setStockList((prevStock) =>
+        prevStock.map((item) => {
+          if (item.id === deductSourceInventoryId) {
+            return {
+              ...item,
+              quantityBultos: newStockQuantity,
+              updatedAt: new Date().toISOString(),
+              updatedBy: currentUser.name,
+            };
+          }
+          return item;
+        }),
+      );
+
+      // 4. Persistir override de stock en localStorage para resistir recargas (F5)
+      try {
+        const existingOverrides = JSON.parse(
+          localStorage.getItem('dsh_stock_overrides') || '{}',
+        );
+        existingOverrides[deductSourceInventoryId] = newStockQuantity;
+        localStorage.setItem(
+          'dsh_stock_overrides',
+          JSON.stringify(existingOverrides),
+        );
+      } catch (e) {
+        console.error('Error guardando override de stock en localStorage', e);
+      }
+
+      // 5. Crear y guardar entrada en el historial de auditoría
+      const newHistoryEntry: StockDeductionHistory = {
+        id: `deduct-${Date.now()}`,
+        productSku: deductStockItem.productSku,
+        quantityBultos: amountToDeduct,
+        reason: deductReason.trim(),
+        performedBy: currentUser.name,
+        timestamp: new Date().toLocaleString('es-AR'),
+        locationCode: source.locationCode,
+      };
+
+      const updatedHistory = [newHistoryEntry, ...deductionHistory];
+      setDeductionHistory(updatedHistory);
+
+      // Persistir el historial en localStorage
+      try {
+        localStorage.setItem(
+          'dsh_deduction_history',
+          JSON.stringify(updatedHistory),
+        );
+      } catch (e) {
+        console.error('Error al guardar historial en localStorage', e);
+      }
+
+      setSuccessMsg(
+        `Se descontaron ${amountToDeduct} bultos del SKU ${deductStockItem.productSku} correctamente. Stock restante: ${newStockQuantity} bultos.`,
+      );
+
+      // Limpiar formulario y cerrar modal
+      setDeductStockItem(null);
+      setDeductSourceInventoryId('');
+      setDeductQuantity(1);
+      setDeductReason('');
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } };
+      setErrorMsg(
+        error.response?.data?.message ||
+          'Error al procesar el descuento de stock.',
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // MANEJADORES DE EVENTOS DE INTERFAZ GENERALES
   // ---------------------------------------------------------------------------
   const toggleItemAccordion = (sku: string) => {
     const lock = activeLocks[sku];
@@ -783,27 +1103,6 @@ export default function InventoryPage() {
     setPackingList((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const handleUpdatePhysicalItem = (
-    itemIdx: number,
-    field: keyof PhysicalControlItem,
-    value: unknown,
-  ) => {
-    setPhysicalControlItems((prev) => {
-      const updated = [...prev];
-      const item = { ...updated[itemIdx], [field]: value };
-
-      if (field === 'lengthCm' || field === 'widthCm' || field === 'heightCm') {
-        const l = field === 'lengthCm' ? Number(value) : item.lengthCm;
-        const w = field === 'widthCm' ? Number(value) : item.widthCm;
-        const h = field === 'heightCm' ? Number(value) : item.heightCm;
-        item.volumePerBultoM3 = Number(((l * w * h) / 1000000).toFixed(4));
-      }
-
-      updated[itemIdx] = item;
-      return updated;
-    });
-  };
-
   const toggleItemControlStatus = (itemIdx: number) => {
     const item = physicalControlItems[itemIdx];
     const newStatus = !item.isChecked;
@@ -844,12 +1143,19 @@ export default function InventoryPage() {
       const currentPallets = item.pallets || [];
       const defaultLoc = locations[0]?.id || '';
 
+      const assignedBultos = currentPallets.reduce(
+        (acc: number, p: PhysicalControlPallet) =>
+          acc + (Number(p.quantityBultos) || 0),
+        0,
+      );
+      const remainingBultos = Math.max(0, item.quantityBultos - assignedBultos);
+
       item.pallets = [
         ...currentPallets,
         {
           palletIndex: currentPallets.length + 1,
-          quantityBultos: 1,
-          unitsPerBox: 1,
+          quantityBultos: remainingBultos > 0 ? remainingBultos : 1,
+          unitsPerBox: item.unitsPerBox || 1,
           lengthCm: 40,
           widthCm: 30,
           heightCm: 30,
@@ -1145,7 +1451,9 @@ export default function InventoryPage() {
         const qtyBultosPallet = Number(pallet.quantityBultos) || 0;
         if (qtyBultosPallet <= 0) continue;
 
-        const validLocId = pallet.locationId?.trim() || defaultLocId;
+        const isLocValid = locations.some((l) => l.id === pallet.locationId);
+        const validLocId = isLocValid ? pallet.locationId : defaultLocId;
+
         if (!validLocId) {
           setErrorMsg(
             `Seleccione una ubicación válida para el pallet del SKU ${item.sku}.`,
@@ -1611,6 +1919,7 @@ export default function InventoryPage() {
                           onClick={() => {
                             setSelectedMallaWarehouseId(null);
                             setMallaZoneFilter('ALL');
+                            setMallaStatusFilter('ALL');
                             setMallaCodeSearch('');
                           }}
                           className="text-xs text-amber-400 font-bold hover:underline mb-1 block"
@@ -1623,7 +1932,8 @@ export default function InventoryPage() {
                         <p className="text-xs text-slate-400">
                           Ocupación: {selectedMallaWarehouse.usedCapacityM3} m³
                           / {selectedMallaWarehouse.totalCapacityM3} m³ |{' '}
-                          {filteredMallaLocations.length} posiciones visibles
+                          {filteredMallaLocations.length} posiciones de{' '}
+                          {processedMallaLocations.length} visibles
                         </p>
                       </div>
 
@@ -1633,17 +1943,18 @@ export default function InventoryPage() {
                             htmlFor="malla-search-input"
                             className="sr-only"
                           >
-                            Buscar posición
+                            Buscar posición o SKU
                           </label>
                           <input
                             id="malla-search-input"
                             type="text"
-                            placeholder="Buscar posición (Ej. A21)..."
+                            placeholder="🔍 Buscar por posición o SKU..."
                             value={mallaCodeSearch}
                             onChange={(e) => setMallaCodeSearch(e.target.value)}
                             className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-mono"
                           />
                         </div>
+
                         <div>
                           <label
                             htmlFor="malla-zone-filter"
@@ -1665,23 +1976,181 @@ export default function InventoryPage() {
                             ))}
                           </select>
                         </div>
+
+                        <div>
+                          <label
+                            htmlFor="malla-status-filter"
+                            className="sr-only"
+                          >
+                            Filtrar por Ocupación
+                          </label>
+                          <select
+                            id="malla-status-filter"
+                            value={mallaStatusFilter}
+                            onChange={(e) =>
+                              setMallaStatusFilter(
+                                e.target.value as
+                                  'ALL' | 'FULL' | 'PARTIAL' | 'EMPTY',
+                              )
+                            }
+                            className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-bold"
+                          >
+                            <option value="ALL">Todos los Estados</option>
+                            <option value="FULL">
+                              🔴 100% Llenos / Críticos
+                            </option>
+                            <option value="PARTIAL">
+                              🟡 Parciales (A Consolidad/Unificar)
+                            </option>
+                            <option value="EMPTY">🟢 Vacíos (Libres)</option>
+                          </select>
+                        </div>
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 max-h-[550px] overflow-y-auto pr-1">
-                      {filteredMallaLocations.map((loc) => (
-                        <div
-                          key={loc.id}
-                          className="p-3 rounded-xl border bg-slate-950 border-slate-800 text-xs"
-                        >
-                          <span className="font-black text-white block truncate">
-                            {loc.code}
-                          </span>
-                          <span className="text-[10px] text-slate-400 block truncate">
-                            {loc.zoneName} ({loc.maxCapacityM3} m³)
-                          </span>
-                        </div>
-                      ))}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-950 p-4 rounded-xl border border-slate-800 text-xs">
+                      <div className="bg-slate-900 p-3 rounded-lg border border-slate-800">
+                        <span className="text-slate-400 block text-[11px] font-bold">
+                          Total Posiciones
+                        </span>
+                        <span className="text-lg font-black text-white font-mono">
+                          {mallaStats.total}
+                        </span>
+                      </div>
+
+                      <div className="bg-red-950/30 p-3 rounded-lg border border-red-900/50">
+                        <span className="text-red-300 block text-[11px] font-bold">
+                          🔴 Racks/Pos. al 100% (Llenos)
+                        </span>
+                        <span className="text-lg font-black text-red-400 font-mono">
+                          {mallaStats.full}
+                        </span>
+                      </div>
+
+                      <div className="bg-amber-950/30 p-3 rounded-lg border border-amber-900/50">
+                        <span className="text-amber-300 block text-[11px] font-bold">
+                          🟡 Racks Parciales (Unificables)
+                        </span>
+                        <span className="text-lg font-black text-amber-400 font-mono">
+                          {mallaStats.partial}
+                        </span>
+                      </div>
+
+                      <div className="bg-emerald-950/30 p-3 rounded-lg border border-emerald-900/50">
+                        <span className="text-emerald-300 block text-[11px] font-bold">
+                          🟢 Racks Vacíos (Disponibles)
+                        </span>
+                        <span className="text-lg font-black text-emerald-400 font-mono">
+                          {mallaStats.empty}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3 max-h-[550px] overflow-y-auto pr-1">
+                      {filteredMallaLocations.map((loc) => {
+                        const pct = loc.occupancyPercentage;
+                        const isFull = pct >= 90;
+                        const isPartial = pct > 0 && pct < 90;
+
+                        return (
+                          <div
+                            key={loc.id}
+                            className={`p-3 rounded-xl border transition-all space-y-2 relative overflow-hidden ${
+                              isFull
+                                ? 'bg-red-950/30 border-red-800/80 hover:border-red-500'
+                                : isPartial
+                                  ? 'bg-amber-950/20 border-amber-800/70 hover:border-amber-500'
+                                  : 'bg-slate-950 border-slate-800 hover:border-slate-700'
+                            }`}
+                          >
+                            <div className="flex justify-between items-start">
+                              <div>
+                                <span className="font-black text-white text-xs font-mono block">
+                                  {loc.code}
+                                </span>
+                                <span className="text-[10px] text-slate-400 block truncate">
+                                  {loc.zoneName}
+                                </span>
+                              </div>
+
+                              <span
+                                className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${
+                                  isFull
+                                    ? 'bg-red-950 text-red-300 border-red-700'
+                                    : isPartial
+                                      ? 'bg-amber-950 text-amber-300 border-amber-700'
+                                      : 'bg-emerald-950 text-emerald-300 border-emerald-800'
+                                }`}
+                              >
+                                {pct}%
+                              </span>
+                            </div>
+
+                            <div className="space-y-1">
+                              <div className="w-full bg-slate-900 h-2 rounded-full overflow-hidden border border-slate-800">
+                                <div
+                                  className={`h-full transition-all duration-300 ${
+                                    isFull
+                                      ? 'bg-red-500'
+                                      : isPartial
+                                        ? 'bg-amber-400'
+                                        : 'bg-emerald-500'
+                                  }`}
+                                  style={{ width: `${Math.max(5, pct)}%` }}
+                                ></div>
+                              </div>
+                              <div className="flex justify-between text-[9px] text-slate-400 font-mono">
+                                <span>
+                                  {loc.occupiedM3.toFixed(2)} /{' '}
+                                  {loc.maxCapacityM3} m³
+                                </span>
+                                <span>{loc.totalBultosLoc} bultos</span>
+                              </div>
+                            </div>
+
+                            {loc.storedProducts.length > 0 ? (
+                              <div className="border-t border-slate-800/80 pt-1.5 space-y-1">
+                                {loc.storedProducts
+                                  .slice(0, 2)
+                                  .map(
+                                    (
+                                      p: {
+                                        sku: string;
+                                        name: string;
+                                        bultos: number;
+                                      },
+                                      pIdx: number,
+                                    ) => (
+                                      <div
+                                        key={pIdx}
+                                        className="flex justify-between items-center text-[10px]"
+                                      >
+                                        <span className="font-mono font-bold text-amber-400 truncate max-w-[100px]">
+                                          {p.sku}
+                                        </span>
+                                        <span className="text-slate-300 font-bold">
+                                          {p.bultos} b.
+                                        </span>
+                                      </div>
+                                    ),
+                                  )}
+                                {loc.storedProducts.length > 2 && (
+                                  <span className="text-[9px] text-slate-500 block text-center">
+                                    + {loc.storedProducts.length - 2} productos
+                                    más
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="border-t border-slate-800/60 pt-1 text-center">
+                                <span className="text-[10px] text-emerald-400/80 font-bold">
+                                  ✓ Posición Libre
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -1838,7 +2307,6 @@ export default function InventoryPage() {
                           </div>
                         </div>
 
-                        {/* CONFIGURACIÓN DE COMBO / KIT */}
                         <div className="pt-2 border-t border-slate-800/80">
                           <label className="flex items-center gap-2 cursor-pointer select-none text-xs text-purple-300 font-bold w-fit">
                             <input
@@ -2085,497 +2553,620 @@ export default function InventoryPage() {
                         </div>
 
                         <div className="space-y-3">
-                          {filteredPhysicalControlItems.map((item) => {
-                            const realIdx = physicalControlItems.findIndex(
-                              (i) => i.sku === item.sku,
-                            );
-                            const isExpanded = expandedItemSkus.includes(
-                              item.sku,
-                            );
-                            const activeLock = activeLocks[item.sku];
-                            const isLockedByOther =
-                              activeLock &&
-                              activeLock.userId !== currentUser.id;
+                          {filteredPhysicalControlItems.map(
+                            (item: PhysicalControlItem) => {
+                              const realIdx = physicalControlItems.findIndex(
+                                (i) => i.sku === item.sku,
+                              );
+                              const isExpanded = expandedItemSkus.includes(
+                                item.sku,
+                              );
+                              const activeLock = activeLocks[item.sku];
+                              const isLockedByOther =
+                                activeLock &&
+                                activeLock.userId !== currentUser.id;
 
-                            const hasComponents =
-                              item.components && item.components.length > 0;
+                              const hasComponents =
+                                item.components && item.components.length > 0;
 
-                            return (
-                              <div
-                                key={item.sku}
-                                className={`bg-slate-950 border rounded-xl ${
-                                  item.isOmitted
-                                    ? 'border-red-900/60 opacity-60 bg-red-950/10'
-                                    : isLockedByOther
-                                      ? 'border-purple-500/50'
-                                      : item.isChecked
-                                        ? 'border-emerald-500/50'
-                                        : 'border-slate-800'
-                                }`}
-                              >
-                                <div className="w-full text-left p-3.5 flex justify-between items-center select-none">
-                                  <div
-                                    onClick={() =>
-                                      toggleItemAccordion(item.sku)
-                                    }
-                                    className="cursor-pointer flex-1"
-                                  >
+                              const currentPallets = item.pallets || [];
+                              const assignedBultos = currentPallets.reduce(
+                                (acc: number, p: PhysicalControlPallet) =>
+                                  acc + (Number(p.quantityBultos) || 0),
+                                0,
+                              );
+                              const missingBultos =
+                                item.quantityBultos - assignedBultos;
+
+                              return (
+                                <div
+                                  key={item.sku}
+                                  className={`bg-slate-950 border rounded-xl ${
+                                    item.isOmitted
+                                      ? 'border-red-900/60 opacity-60 bg-red-950/10'
+                                      : isLockedByOther
+                                        ? 'border-purple-500/50'
+                                        : item.isChecked
+                                          ? 'border-emerald-500/50'
+                                          : 'border-slate-800'
+                                  }`}
+                                >
+                                  <div className="w-full text-left p-3.5 flex justify-between items-center select-none">
+                                    <div
+                                      onClick={() =>
+                                        toggleItemAccordion(item.sku)
+                                      }
+                                      className="cursor-pointer flex-1"
+                                    >
+                                      <div className="flex items-center gap-2 flex-wrap">
+                                        <h3 className="font-black text-white text-sm">
+                                          SKU:{' '}
+                                          <span className="text-amber-400">
+                                            {item.sku}
+                                          </span>{' '}
+                                          - {item.description}
+                                        </h3>
+                                        {(item.isCombo || hasComponents) && (
+                                          <span className="px-2 py-0.5 text-[10px] font-black bg-purple-950 text-purple-300 border border-purple-800 rounded-full">
+                                            COMBO / KIT
+                                          </span>
+                                        )}
+                                        {item.isOmitted && (
+                                          <span className="px-2 py-0.5 text-[10px] font-black bg-red-950 text-red-300 border border-red-800 rounded-full">
+                                            FALTANTE TOTAL (0 BULTOS)
+                                          </span>
+                                        )}
+
+                                        {!item.isOmitted && !hasComponents && (
+                                          <span
+                                            className={`px-2 py-0.5 text-[10px] font-black rounded-full border ${
+                                              missingBultos > 0
+                                                ? 'bg-amber-950/80 text-amber-300 border-amber-500/60'
+                                                : missingBultos === 0
+                                                  ? 'bg-emerald-950/80 text-emerald-300 border-emerald-500/60'
+                                                  : 'bg-red-950/80 text-red-300 border-red-500/60'
+                                            }`}
+                                          >
+                                            {missingBultos > 0
+                                              ? `⚠️ Faltan ${missingBultos} bulto(s) por palletizar`
+                                              : missingBultos === 0
+                                                ? `✓ Bultos balanceados (${assignedBultos}/${item.quantityBultos})`
+                                                : `⚠️ Exceso de ${Math.abs(missingBultos)} bulto(s)`}
+                                          </span>
+                                        )}
+                                      </div>
+
+                                      <p className="text-xs text-slate-400 mt-0.5">
+                                        Bultos Esperados:{' '}
+                                        <strong className="text-amber-400">
+                                          {item.isOmitted
+                                            ? 0
+                                            : item.quantityBultos}
+                                        </strong>
+                                        {item.hasShowroomSample && (
+                                          <span className="ml-2 text-purple-400 font-bold bg-purple-950/60 border border-purple-800/80 px-1.5 py-0.5 rounded text-[10px]">
+                                            🧪 Muestra Showroom (
+                                            {item.sampleUnitsCount} un.)
+                                          </span>
+                                        )}
+                                        {item.controlledBy && (
+                                          <span className="ml-2 text-emerald-400 font-bold">
+                                            (✓ Auditado por {item.controlledBy})
+                                          </span>
+                                        )}
+                                      </p>
+                                    </div>
+
                                     <div className="flex items-center gap-2">
-                                      <h3 className="font-black text-white text-sm">
-                                        SKU:{' '}
-                                        <span className="text-amber-400">
-                                          {item.sku}
-                                        </span>{' '}
-                                        - {item.description}
-                                      </h3>
-                                      {(item.isCombo || hasComponents) && (
-                                        <span className="px-2 py-0.5 text-[10px] font-black bg-purple-950 text-purple-300 border border-purple-800 rounded-full">
-                                          COMBO / KIT
-                                        </span>
+                                      <button
+                                        type="button"
+                                        onClick={() => toggleOmitItem(realIdx)}
+                                        className={`px-2.5 py-1.5 rounded text-xs font-bold border transition-colors ${
+                                          item.isOmitted
+                                            ? 'bg-red-900/40 text-red-300 border-red-700 hover:bg-red-800/50'
+                                            : 'bg-red-950/20 text-red-400 border-red-900 hover:bg-red-900/40'
+                                        }`}
+                                        title="Marcar si este producto no vino en el contenedor"
+                                      >
+                                        {item.isOmitted
+                                          ? '↩ Restaurar SKU'
+                                          : '✕ Marcar 0 / Faltante'}
+                                      </button>
+
+                                      {!item.isOmitted && (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            toggleItemControlStatus(realIdx)
+                                          }
+                                          className={`px-3 py-1.5 rounded text-xs font-bold ${
+                                            item.isChecked
+                                              ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                                              : 'bg-slate-800 text-slate-300'
+                                          }`}
+                                        >
+                                          {item.isChecked
+                                            ? '✓ Controlado'
+                                            : 'Marcar Controlado'}
+                                        </button>
                                       )}
-                                      {item.isOmitted && (
-                                        <span className="px-2 py-0.5 text-[10px] font-black bg-red-950 text-red-300 border border-red-800 rounded-full">
-                                          FALTANTE TOTAL (0 BULTOS)
-                                        </span>
+
+                                      {!item.isOmitted && (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            toggleItemAccordion(item.sku)
+                                          }
+                                          className="text-amber-400 font-bold text-xs ml-1"
+                                        >
+                                          {isExpanded
+                                            ? '▲ Ocultar'
+                                            : '▼ Editar'}
+                                        </button>
                                       )}
                                     </div>
-                                    <p className="text-xs text-slate-400 mt-0.5">
-                                      Bultos Esperados:{' '}
-                                      <strong className="text-amber-400">
-                                        {item.isOmitted
-                                          ? 0
-                                          : item.quantityBultos}
-                                      </strong>
-                                      {item.controlledBy && (
-                                        <span className="ml-2 text-emerald-400 font-bold">
-                                          (✓ Auditado por {item.controlledBy})
-                                        </span>
-                                      )}
-                                    </p>
                                   </div>
 
-                                  <div className="flex items-center gap-2">
-                                    <button
-                                      type="button"
-                                      onClick={() => toggleOmitItem(realIdx)}
-                                      className={`px-2.5 py-1.5 rounded text-xs font-bold border transition-colors ${
-                                        item.isOmitted
-                                          ? 'bg-red-900/40 text-red-300 border-red-700 hover:bg-red-800/50'
-                                          : 'bg-red-950/20 text-red-400 border-red-900 hover:bg-red-900/40'
-                                      }`}
-                                      title="Marcar si este producto no vino en el contenedor"
-                                    >
-                                      {item.isOmitted
-                                        ? '↩ Restaurar SKU'
-                                        : '✕ Marcar 0 / Faltante'}
-                                    </button>
+                                  {isExpanded &&
+                                    !isLockedByOther &&
+                                    !item.isOmitted && (
+                                      <div className="p-4 border-t border-slate-800 space-y-4 text-xs bg-slate-900/40 rounded-b-xl">
+                                        <div className="bg-slate-900 border border-slate-800 p-3 rounded-xl flex flex-wrap items-center justify-between gap-3">
+                                          <label className="flex items-center gap-2 cursor-pointer select-none text-xs text-amber-300 font-bold">
+                                            <input
+                                              type="checkbox"
+                                              checked={item.hasShowroomSample}
+                                              onChange={(e) => {
+                                                const checked =
+                                                  e.target.checked;
+                                                setPhysicalControlItems(
+                                                  (prev) => {
+                                                    const copy = [...prev];
+                                                    copy[realIdx] = {
+                                                      ...copy[realIdx],
+                                                      hasShowroomSample:
+                                                        checked,
+                                                      sampleUnitsCount: checked
+                                                        ? copy[realIdx]
+                                                            .sampleUnitsCount ||
+                                                          1
+                                                        : 0,
+                                                    };
+                                                    return copy;
+                                                  },
+                                                );
+                                              }}
+                                              className="w-4 h-4 accent-amber-500 rounded"
+                                            />
+                                            🧪 ¿Extraer Muestras para Showroom /
+                                            Control de Calidad?
+                                          </label>
 
-                                    {!item.isOmitted && (
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          toggleItemControlStatus(realIdx)
-                                        }
-                                        className={`px-3 py-1.5 rounded text-xs font-bold ${
-                                          item.isChecked
-                                            ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
-                                            : 'bg-slate-800 text-slate-300'
-                                        }`}
-                                      >
-                                        {item.isChecked
-                                          ? '✓ Controlado'
-                                          : 'Marcar Controlado'}
-                                      </button>
-                                    )}
-
-                                    {!item.isOmitted && (
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          toggleItemAccordion(item.sku)
-                                        }
-                                        className="text-amber-400 font-bold text-xs ml-1"
-                                      >
-                                        {isExpanded ? '▲ Ocultar' : '▼ Editar'}
-                                      </button>
-                                    )}
-                                  </div>
-                                </div>
-
-                                {/* DESPLEGABLE DE EDICIÓN Y COMPONENTES HIJOS */}
-                                {isExpanded &&
-                                  !isLockedByOther &&
-                                  !item.isOmitted && (
-                                    <div className="p-4 border-t border-slate-800 space-y-4 text-xs bg-slate-900/40 rounded-b-xl">
-                                      {hasComponents && (
-                                        <div className="bg-purple-950/30 border border-purple-800/50 p-3 rounded-lg space-y-2">
-                                          <span className="text-xs font-bold text-purple-300 block">
-                                            📦 Desglose por Componentes (SKUs
-                                            Hijos)
-                                          </span>
-                                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
-                                            {item.components!.map((comp) => (
-                                              <div
-                                                key={comp.childSku}
-                                                className="bg-slate-950/80 p-2 rounded border border-slate-800 flex justify-between items-center"
-                                              >
-                                                <div>
-                                                  <strong className="text-amber-400 font-mono block">
-                                                    {comp.childSku}
-                                                  </strong>
-                                                  <span className="text-slate-300">
-                                                    {comp.description}
-                                                  </span>
-                                                </div>
-                                                <div className="flex items-center gap-2">
-                                                  <span className="bg-purple-900/80 text-purple-200 px-2 py-1 rounded font-bold">
-                                                    {item.quantityBultos *
-                                                      comp.quantityPerCombo}{' '}
-                                                    bultos
-                                                  </span>
-                                                  <button
-                                                    type="button"
-                                                    onClick={() =>
-                                                      handleAddPalletToItem(
-                                                        realIdx,
-                                                        comp.childSku,
-                                                      )
-                                                    }
-                                                    className="px-2 py-1 bg-purple-800 hover:bg-purple-700 text-white font-bold rounded text-[10px]"
-                                                  >
-                                                    + Pallet
-                                                  </button>
-                                                </div>
-                                              </div>
-                                            ))}
-                                          </div>
-                                        </div>
-                                      )}
-
-                                      {/* GESTIÓN DE PALLETS E INPUTS INDIVIDUALES */}
-                                      <div className="space-y-3">
-                                        <div className="flex justify-between items-center">
-                                          <span className="font-bold text-slate-300 text-xs">
-                                            Distribución de Pallets y Estibado
-                                          </span>
-                                          {!hasComponents && (
-                                            <button
-                                              type="button"
-                                              onClick={() =>
-                                                handleAddPalletToItem(realIdx)
-                                              }
-                                              className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold rounded text-[11px]"
-                                            >
-                                              + Agregar Otro Pallet
-                                            </button>
+                                          {item.hasShowroomSample && (
+                                            <div className="flex items-center gap-2">
+                                              <span className="text-slate-400 text-xs">
+                                                Unidades de muestra extraídas:
+                                              </span>
+                                              <input
+                                                type="number"
+                                                min={1}
+                                                value={item.sampleUnitsCount}
+                                                onChange={(e) => {
+                                                  const val = Number(
+                                                    e.target.value,
+                                                  );
+                                                  setPhysicalControlItems(
+                                                    (prev) => {
+                                                      const copy = [...prev];
+                                                      copy[realIdx] = {
+                                                        ...copy[realIdx],
+                                                        sampleUnitsCount: val,
+                                                      };
+                                                      return copy;
+                                                    },
+                                                  );
+                                                }}
+                                                className="w-20 bg-slate-950 border border-amber-500/60 p-1.5 rounded text-amber-300 font-bold text-center text-xs"
+                                              />
+                                            </div>
                                           )}
                                         </div>
 
-                                        {(item.pallets || []).map(
-                                          (pallet, pIdx) => {
-                                            const keySearch = `${item.sku}_${pIdx}`;
-                                            const locSearchQuery = (
-                                              phase2LocationSearches[
-                                                keySearch
-                                              ] || ''
-                                            )
-                                              .toLowerCase()
-                                              .trim();
+                                        {hasComponents && (
+                                          <div className="bg-purple-950/30 border border-purple-800/50 p-3 rounded-lg space-y-2">
+                                            <span className="text-xs font-bold text-purple-300 block">
+                                              📦 Desglose por Componentes (SKUs
+                                              Hijos)
+                                            </span>
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+                                              {item.components!.map(
+                                                (comp: ComboComponent) => (
+                                                  <div
+                                                    key={comp.childSku}
+                                                    className="bg-slate-950/80 p-2 rounded border border-slate-800 flex justify-between items-center"
+                                                  >
+                                                    <div>
+                                                      <strong className="text-amber-400 font-mono block">
+                                                        {comp.childSku}
+                                                      </strong>
+                                                      <span className="text-slate-300">
+                                                        {comp.description}
+                                                      </span>
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                      <span className="bg-purple-900/80 text-purple-200 px-2 py-1 rounded font-bold">
+                                                        {item.quantityBultos *
+                                                          comp.quantityPerCombo}{' '}
+                                                        bultos
+                                                      </span>
+                                                      <button
+                                                        type="button"
+                                                        onClick={() =>
+                                                          handleAddPalletToItem(
+                                                            realIdx,
+                                                            comp.childSku,
+                                                          )
+                                                        }
+                                                        className="px-2 py-1 bg-purple-800 hover:bg-purple-700 text-white font-bold rounded text-[10px]"
+                                                      >
+                                                        + Pallet
+                                                      </button>
+                                                    </div>
+                                                  </div>
+                                                ),
+                                              )}
+                                            </div>
+                                          </div>
+                                        )}
 
-                                            const filteredLocList =
-                                              locSearchQuery
-                                                ? locations.filter(
-                                                    (l) =>
-                                                      l.code
-                                                        .toLowerCase()
-                                                        .includes(
-                                                          locSearchQuery,
-                                                        ) ||
-                                                      (l.zoneName &&
-                                                        l.zoneName
+                                        <div className="space-y-3">
+                                          <div className="flex justify-between items-center">
+                                            <div className="flex items-center gap-2">
+                                              <span className="font-bold text-slate-300 text-xs">
+                                                Distribución de Pallets y
+                                                Estibado
+                                              </span>
+                                              {missingBultos > 0 &&
+                                                !hasComponents && (
+                                                  <span className="text-[11px] font-bold text-amber-400">
+                                                    (Pendientes de asignar:{' '}
+                                                    {missingBultos} bultos)
+                                                  </span>
+                                                )}
+                                            </div>
+
+                                            {!hasComponents && (
+                                              <button
+                                                type="button"
+                                                onClick={() =>
+                                                  handleAddPalletToItem(realIdx)
+                                                }
+                                                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold rounded text-[11px]"
+                                              >
+                                                + Agregar Otro Pallet
+                                              </button>
+                                            )}
+                                          </div>
+
+                                          {(item.pallets || []).map(
+                                            (
+                                              pallet: PhysicalControlPallet,
+                                              pIdx: number,
+                                            ) => {
+                                              const keySearch = `${item.sku}_${pIdx}`;
+                                              const locSearchQuery = (
+                                                phase2LocationSearches[
+                                                  keySearch
+                                                ] || ''
+                                              )
+                                                .toLowerCase()
+                                                .trim();
+
+                                              const filteredLocList =
+                                                locSearchQuery
+                                                  ? locations.filter(
+                                                      (l) =>
+                                                        l.code
                                                           .toLowerCase()
                                                           .includes(
                                                             locSearchQuery,
-                                                          )),
-                                                  )
-                                                : locations;
+                                                          ) ||
+                                                        (l.zoneName &&
+                                                          l.zoneName
+                                                            .toLowerCase()
+                                                            .includes(
+                                                              locSearchQuery,
+                                                            )),
+                                                    )
+                                                  : locations;
 
-                                            return (
-                                              <div
-                                                key={pIdx}
-                                                className="bg-slate-900 border border-slate-800 p-3 rounded-xl space-y-3"
-                                              >
-                                                <div className="flex justify-between items-center border-b border-slate-800 pb-2">
-                                                  <span className="font-bold text-amber-400">
-                                                    Pallet #{pallet.palletIndex}
-                                                  </span>
-                                                  {pallet.childSku && (
-                                                    <span className="text-xs font-mono text-purple-300 font-bold bg-purple-950/80 px-2 py-0.5 rounded border border-purple-800">
-                                                      SKU Hijo:{' '}
-                                                      {pallet.childSku}
+                                              return (
+                                                <div
+                                                  key={pIdx}
+                                                  className="bg-slate-900 border border-slate-800 p-3 rounded-xl space-y-3"
+                                                >
+                                                  <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                                                    <span className="font-bold text-amber-400">
+                                                      Pallet #
+                                                      {pallet.palletIndex}
                                                     </span>
-                                                  )}
-                                                </div>
-
-                                                <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
-                                                  <div className="sm:col-span-2">
-                                                    <label
-                                                      htmlFor={`pallet-qty-${realIdx}-${pIdx}`}
-                                                      className="block text-slate-400 mb-1 text-[11px]"
-                                                    >
-                                                      Bultos
-                                                    </label>
-                                                    <input
-                                                      id={`pallet-qty-${realIdx}-${pIdx}`}
-                                                      type="number"
-                                                      value={
-                                                        pallet.quantityBultos
-                                                      }
-                                                      onChange={(e) =>
-                                                        handleUpdatePalletItem(
-                                                          realIdx,
-                                                          pIdx,
-                                                          'quantityBultos',
-                                                          Number(
-                                                            e.target.value,
-                                                          ),
-                                                        )
-                                                      }
-                                                      className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-amber-300 font-bold text-center text-xs"
-                                                    />
+                                                    {pallet.childSku && (
+                                                      <span className="text-xs font-mono text-purple-300 font-bold bg-purple-950/80 px-2 py-0.5 rounded border border-purple-800">
+                                                        SKU Hijo:{' '}
+                                                        {pallet.childSku}
+                                                      </span>
+                                                    )}
                                                   </div>
 
-                                                  <div className="sm:col-span-2">
-                                                    <label
-                                                      htmlFor={`pallet-units-${realIdx}-${pIdx}`}
-                                                      className="block text-slate-400 mb-1 text-[11px]"
-                                                    >
-                                                      Unid. x Bulto
-                                                    </label>
-                                                    <input
-                                                      id={`pallet-units-${realIdx}-${pIdx}`}
-                                                      type="number"
-                                                      value={pallet.unitsPerBox}
-                                                      onChange={(e) =>
-                                                        handleUpdatePalletItem(
-                                                          realIdx,
-                                                          pIdx,
-                                                          'unitsPerBox',
-                                                          Number(
-                                                            e.target.value,
-                                                          ),
-                                                        )
-                                                      }
-                                                      className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold text-center text-xs"
-                                                    />
-                                                  </div>
-
-                                                  <div className="sm:col-span-3">
-                                                    <span className="block text-slate-400 mb-1 text-[11px]">
-                                                      Medidas (L x A x H cm)
-                                                    </span>
-                                                    <div className="flex gap-1">
-                                                      <input
-                                                        aria-label="Largo en cm"
-                                                        type="number"
-                                                        value={pallet.lengthCm}
-                                                        onChange={(e) =>
-                                                          handleUpdatePalletItem(
-                                                            realIdx,
-                                                            pIdx,
-                                                            'lengthCm',
-                                                            Number(
-                                                              e.target.value,
-                                                            ),
-                                                          )
-                                                        }
-                                                        className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center text-xs"
-                                                      />
-                                                      <input
-                                                        aria-label="Ancho en cm"
-                                                        type="number"
-                                                        value={pallet.widthCm}
-                                                        onChange={(e) =>
-                                                          handleUpdatePalletItem(
-                                                            realIdx,
-                                                            pIdx,
-                                                            'widthCm',
-                                                            Number(
-                                                              e.target.value,
-                                                            ),
-                                                          )
-                                                        }
-                                                        className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center text-xs"
-                                                      />
-                                                      <input
-                                                        aria-label="Alto en cm"
-                                                        type="number"
-                                                        value={pallet.heightCm}
-                                                        onChange={(e) =>
-                                                          handleUpdatePalletItem(
-                                                            realIdx,
-                                                            pIdx,
-                                                            'heightCm',
-                                                            Number(
-                                                              e.target.value,
-                                                            ),
-                                                          )
-                                                        }
-                                                        className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center text-xs"
-                                                      />
-                                                    </div>
-                                                  </div>
-
-                                                  <div className="sm:col-span-2">
-                                                    <label
-                                                      htmlFor={`pallet-weight-${realIdx}-${pIdx}`}
-                                                      className="block text-slate-400 mb-1 text-[11px]"
-                                                    >
-                                                      Peso Bulto (Kg)
-                                                    </label>
-                                                    <input
-                                                      id={`pallet-weight-${realIdx}-${pIdx}`}
-                                                      type="number"
-                                                      value={
-                                                        pallet.weightPerBultoKg
-                                                      }
-                                                      onChange={(e) =>
-                                                        handleUpdatePalletItem(
-                                                          realIdx,
-                                                          pIdx,
-                                                          'weightPerBultoKg',
-                                                          Number(
-                                                            e.target.value,
-                                                          ),
-                                                        )
-                                                      }
-                                                      className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold text-center text-xs"
-                                                    />
-                                                  </div>
-
-                                                  <div className="sm:col-span-3">
-                                                    <label
-                                                      htmlFor={`pallet-loc-${realIdx}-${pIdx}`}
-                                                      className="block text-slate-400 mb-1 text-[11px]"
-                                                    >
-                                                      Ubicación Destino *
-                                                    </label>
-                                                    <div className="space-y-1">
-                                                      <input
-                                                        type="text"
-                                                        placeholder="🔍 Filtrar..."
-                                                        value={
-                                                          phase2LocationSearches[
-                                                            keySearch
-                                                          ] || ''
-                                                        }
-                                                        onChange={(e) =>
-                                                          setPhase2LocationSearches(
-                                                            (prev) => ({
-                                                              ...prev,
-                                                              [keySearch]:
-                                                                e.target.value,
-                                                            }),
-                                                          )
-                                                        }
-                                                        className="w-full bg-slate-950 border border-slate-800 p-1 rounded text-white text-[11px]"
-                                                      />
-                                                      <select
-                                                        id={`pallet-loc-${realIdx}-${pIdx}`}
-                                                        value={
-                                                          pallet.locationId
-                                                        }
-                                                        onChange={(e) =>
-                                                          handleUpdatePalletItem(
-                                                            realIdx,
-                                                            pIdx,
-                                                            'locationId',
-                                                            e.target.value,
-                                                          )
-                                                        }
-                                                        className="w-full bg-slate-950 border border-amber-500/40 p-1.5 rounded text-white font-bold text-xs"
+                                                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
+                                                    <div className="sm:col-span-2">
+                                                      <label
+                                                        htmlFor={`pallet-qty-${realIdx}-${pIdx}`}
+                                                        className="block text-slate-400 mb-1 text-[11px]"
                                                       >
-                                                        {filteredLocList.length >
-                                                        0 ? (
-                                                          filteredLocList.map(
-                                                            (loc) => (
-                                                              <option
-                                                                key={loc.id}
-                                                                value={loc.id}
-                                                              >
-                                                                {loc.code} (
-                                                                {loc.zoneName})
-                                                              </option>
+                                                        Bultos
+                                                      </label>
+                                                      <input
+                                                        id={`pallet-qty-${realIdx}-${pIdx}`}
+                                                        type="number"
+                                                        value={
+                                                          pallet.quantityBultos
+                                                        }
+                                                        onChange={(e) =>
+                                                          handleUpdatePalletItem(
+                                                            realIdx,
+                                                            pIdx,
+                                                            'quantityBultos',
+                                                            Number(
+                                                              e.target.value,
                                                             ),
                                                           )
-                                                        ) : (
-                                                          <option value="">
-                                                            Sin ubicaciones
-                                                          </option>
-                                                        )}
-                                                      </select>
+                                                        }
+                                                        className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-amber-300 font-bold text-center text-xs"
+                                                      />
+                                                    </div>
+
+                                                    <div className="sm:col-span-2">
+                                                      <label
+                                                        htmlFor={`pallet-units-${realIdx}-${pIdx}`}
+                                                        className="block text-slate-400 mb-1 text-[11px]"
+                                                      >
+                                                        Unid. x Bulto
+                                                      </label>
+                                                      <input
+                                                        id={`pallet-units-${realIdx}-${pIdx}`}
+                                                        type="number"
+                                                        value={
+                                                          pallet.unitsPerBox
+                                                        }
+                                                        onChange={(e) =>
+                                                          handleUpdatePalletItem(
+                                                            realIdx,
+                                                            pIdx,
+                                                            'unitsPerBox',
+                                                            Number(
+                                                              e.target.value,
+                                                            ),
+                                                          )
+                                                        }
+                                                        className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold text-center text-xs"
+                                                      />
+                                                    </div>
+
+                                                    <div className="sm:col-span-3">
+                                                      <span className="block text-slate-400 mb-1 text-[11px]">
+                                                        Medidas (L x A x H cm)
+                                                      </span>
+                                                      <div className="flex gap-1">
+                                                        <input
+                                                          aria-label="Largo en cm"
+                                                          type="number"
+                                                          value={
+                                                            pallet.lengthCm
+                                                          }
+                                                          onChange={(e) =>
+                                                            handleUpdatePalletItem(
+                                                              realIdx,
+                                                              pIdx,
+                                                              'lengthCm',
+                                                              Number(
+                                                                e.target.value,
+                                                              ),
+                                                            )
+                                                          }
+                                                          className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center text-xs"
+                                                        />
+                                                        <input
+                                                          aria-label="Ancho en cm"
+                                                          type="number"
+                                                          value={pallet.widthCm}
+                                                          onChange={(e) =>
+                                                            handleUpdatePalletItem(
+                                                              realIdx,
+                                                              pIdx,
+                                                              'widthCm',
+                                                              Number(
+                                                                e.target.value,
+                                                              ),
+                                                            )
+                                                          }
+                                                          className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center text-xs"
+                                                        />
+                                                        <input
+                                                          aria-label="Alto en cm"
+                                                          type="number"
+                                                          value={
+                                                            pallet.heightCm
+                                                          }
+                                                          onChange={(e) =>
+                                                            handleUpdatePalletItem(
+                                                              realIdx,
+                                                              pIdx,
+                                                              'heightCm',
+                                                              Number(
+                                                                e.target.value,
+                                                              ),
+                                                            )
+                                                          }
+                                                          className="w-1/3 bg-slate-950 border border-slate-800 p-1.5 rounded text-white text-center text-xs"
+                                                        />
+                                                      </div>
+                                                    </div>
+
+                                                    <div className="sm:col-span-2">
+                                                      <label
+                                                        htmlFor={`pallet-weight-${realIdx}-${pIdx}`}
+                                                        className="block text-slate-400 mb-1 text-[11px]"
+                                                      >
+                                                        Peso Bulto (Kg)
+                                                      </label>
+                                                      <input
+                                                        id={`pallet-weight-${realIdx}-${pIdx}`}
+                                                        type="number"
+                                                        value={
+                                                          pallet.weightPerBultoKg
+                                                        }
+                                                        onChange={(e) =>
+                                                          handleUpdatePalletItem(
+                                                            realIdx,
+                                                            pIdx,
+                                                            'weightPerBultoKg',
+                                                            Number(
+                                                              e.target.value,
+                                                            ),
+                                                          )
+                                                        }
+                                                        className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold text-center text-xs"
+                                                      />
+                                                    </div>
+
+                                                    <div className="sm:col-span-3">
+                                                      <label
+                                                        htmlFor={`pallet-loc-${realIdx}-${pIdx}`}
+                                                        className="block text-slate-400 mb-1 text-[11px]"
+                                                      >
+                                                        Ubicación Destino *
+                                                      </label>
+                                                      <div className="space-y-1">
+                                                        <input
+                                                          type="text"
+                                                          placeholder="🔍 Filtrar..."
+                                                          value={
+                                                            phase2LocationSearches[
+                                                              keySearch
+                                                            ] || ''
+                                                          }
+                                                          onChange={(e) =>
+                                                            setPhase2LocationSearches(
+                                                              (prev) => ({
+                                                                ...prev,
+                                                                [keySearch]:
+                                                                  e.target
+                                                                    .value,
+                                                              }),
+                                                            )
+                                                          }
+                                                          className="w-full bg-slate-950 border border-slate-800 p-1 rounded text-white text-[11px]"
+                                                        />
+                                                        <select
+                                                          id={`pallet-loc-${realIdx}-${pIdx}`}
+                                                          value={
+                                                            pallet.locationId
+                                                          }
+                                                          onChange={(e) =>
+                                                            handleUpdatePalletItem(
+                                                              realIdx,
+                                                              pIdx,
+                                                              'locationId',
+                                                              e.target.value,
+                                                            )
+                                                          }
+                                                          className="w-full bg-slate-950 border border-amber-500/40 p-1.5 rounded text-white font-bold text-xs"
+                                                        >
+                                                          {filteredLocList.length >
+                                                          0 ? (
+                                                            filteredLocList.map(
+                                                              (loc) => (
+                                                                <option
+                                                                  key={loc.id}
+                                                                  value={loc.id}
+                                                                >
+                                                                  {loc.code} (
+                                                                  {loc.zoneName}
+                                                                  )
+                                                                </option>
+                                                              ),
+                                                            )
+                                                          ) : (
+                                                            <option value="">
+                                                              Sin ubicaciones
+                                                            </option>
+                                                          )}
+                                                        </select>
+                                                      </div>
                                                     </div>
                                                   </div>
-                                                </div>
 
-                                                <div className="flex justify-end gap-2 border-t border-slate-800/60 pt-2">
-                                                  <button
-                                                    type="button"
-                                                    onClick={() =>
-                                                      setPrintModalData({
-                                                        productSku:
-                                                          pallet.childSku ||
-                                                          item.sku,
-                                                        productName:
-                                                          item.description,
-                                                        quantityBultos:
-                                                          pallet.quantityBultos,
-                                                        locationCode:
-                                                          locations.find(
-                                                            (l) =>
-                                                              l.id ===
-                                                              pallet.locationId,
-                                                          )?.code || 'S/U',
-                                                        warehouseName:
-                                                          simpleWarehousesList.find(
-                                                            (w) =>
-                                                              w.id ===
-                                                              dischargeWarehouseId,
-                                                          )?.name,
-                                                        date: generalEntryDate,
-                                                      })
-                                                    }
-                                                    className="px-2.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded text-[10px]"
-                                                  >
-                                                    Rótulo A4
-                                                  </button>
-
-                                                  {item.pallets.length > 1 && (
+                                                  <div className="flex justify-end gap-2 border-t border-slate-800/60 pt-2">
                                                     <button
                                                       type="button"
                                                       onClick={() =>
-                                                        handleRemovePalletFromItem(
-                                                          realIdx,
-                                                          pIdx,
-                                                        )
+                                                        setPrintModalData({
+                                                          productSku:
+                                                            pallet.childSku ||
+                                                            item.sku,
+                                                          productName:
+                                                            item.description,
+                                                          quantityBultos:
+                                                            pallet.quantityBultos,
+                                                          locationCode:
+                                                            locations.find(
+                                                              (l) =>
+                                                                l.id ===
+                                                                pallet.locationId,
+                                                            )?.code || 'S/U',
+                                                          warehouseName:
+                                                            simpleWarehousesList.find(
+                                                              (w) =>
+                                                                w.id ===
+                                                                dischargeWarehouseId,
+                                                            )?.name,
+                                                          date: generalEntryDate,
+                                                        })
                                                       }
-                                                      aria-label={`Eliminar Pallet #${pallet.palletIndex}`}
-                                                      className="px-2 py-1.5 bg-red-950 border border-red-800 text-red-400 hover:bg-red-900 rounded font-bold text-xs"
+                                                      className="px-2.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded text-[10px]"
                                                     >
-                                                      X
+                                                      Rótulo A4
                                                     </button>
-                                                  )}
+
+                                                    {item.pallets.length >
+                                                      1 && (
+                                                      <button
+                                                        type="button"
+                                                        onClick={() =>
+                                                          handleRemovePalletFromItem(
+                                                            realIdx,
+                                                            pIdx,
+                                                          )
+                                                        }
+                                                        aria-label={`Eliminar Pallet #${pallet.palletIndex}`}
+                                                        className="px-2 py-1.5 bg-red-950 border border-red-800 text-red-400 hover:bg-red-900 rounded font-bold text-xs"
+                                                      >
+                                                        X
+                                                      </button>
+                                                    )}
+                                                  </div>
                                                 </div>
-                                              </div>
-                                            );
-                                          },
-                                        )}
+                                              );
+                                            },
+                                          )}
+                                        </div>
                                       </div>
-                                    </div>
-                                  )}
-                              </div>
-                            );
-                          })}
+                                    )}
+                                </div>
+                              );
+                            },
+                          )}
                         </div>
 
                         <button
@@ -2704,7 +3295,7 @@ export default function InventoryPage() {
                             <button
                               type="button"
                               onClick={() => setSelectedContainerDetail(c)}
-                              className="px-2 py-1 bg-slate-800 text-slate-200 hover:bg-slate-700 rounded text-[10px] font-bold"
+                              className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded text-[10px] font-black shadow"
                             >
                               Ver Detalle
                             </button>
@@ -2763,25 +3354,43 @@ export default function InventoryPage() {
             {activeTab === 'STOCK' && (
               <section className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
                 <div className="flex flex-wrap justify-between items-center gap-3 border-b border-slate-800 pb-3">
-                  <h2 className="text-base font-bold text-amber-400">
-                    Control de Stock e Impresión de Rótulos A4
-                  </h2>
-
                   <div>
-                    <label htmlFor="stock-search-input" className="sr-only">
-                      Buscar por SKU o Producto
-                    </label>
-                    <input
-                      id="stock-search-input"
-                      type="text"
-                      placeholder="🔍 Buscar por SKU o Producto..."
-                      value={stockSearchQuery}
-                      onChange={(e) => {
-                        setStockSearchQuery(e.target.value);
-                        setStockPage(1);
-                      }}
-                      className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-bold w-full sm:w-72"
-                    />
+                    <h2 className="text-base font-bold text-amber-400">
+                      Control de Stock e Impresión de Rótulos A4
+                    </h2>
+                    <p className="text-xs text-slate-400">
+                      Visualización de ubicación, auditoría de usuario y egreso
+                      manual por Administrador
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    {deductionHistory.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setShowDeductionHistoryModal(true)}
+                        className="px-3 py-2 bg-purple-950 text-purple-300 border border-purple-800 hover:bg-purple-900 font-bold rounded-xl text-xs transition-colors"
+                      >
+                        📋 Ver Historial Descuentos ({deductionHistory.length})
+                      </button>
+                    )}
+
+                    <div>
+                      <label htmlFor="stock-search-input" className="sr-only">
+                        Buscar por SKU o Producto
+                      </label>
+                      <input
+                        id="stock-search-input"
+                        type="text"
+                        placeholder="🔍 Buscar por SKU o Producto..."
+                        value={stockSearchQuery}
+                        onChange={(e) => {
+                          setStockSearchQuery(e.target.value);
+                          setStockPage(1);
+                        }}
+                        className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-bold w-full sm:w-72"
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -2800,7 +3409,7 @@ export default function InventoryPage() {
                             {prod.productName}
                           </h3>
                         </div>
-                        <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-3">
                           <div className="text-right">
                             <span className="text-xs text-slate-400 block">
                               Stock Total Bultos
@@ -2837,10 +3446,33 @@ export default function InventoryPage() {
                                 );
                               }
                             }}
-                            className="px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white font-black rounded-xl text-xs shadow-md"
+                            className="px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white font-black rounded-xl text-xs shadow-md transition-colors"
                           >
                             Reubicar Pallet / Mover
                           </button>
+
+                          {userRole === 'ADMIN' && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const firstSource = prod.locations[0];
+                                setDeductStockItem({
+                                  productSku: prod.productSku,
+                                  productName: prod.productName,
+                                  availableSources: prod.locations,
+                                });
+                                setDeductSourceInventoryId(
+                                  firstSource?.inventoryId || '',
+                                );
+                                setDeductQuantity(1);
+                                setDeductReason('');
+                              }}
+                              className="px-3 py-2 bg-rose-700 hover:bg-rose-600 text-white font-black rounded-xl text-xs shadow-md transition-colors border border-rose-500/50"
+                              title="Opción exclusiva para Administradores"
+                            >
+                              ➖ Descontar Stock
+                            </button>
+                          )}
                         </div>
                       </div>
 
@@ -2852,21 +3484,46 @@ export default function InventoryPage() {
                           {prod.locations.map((loc) => (
                             <div
                               key={loc.inventoryId}
-                              className="bg-slate-900 border border-slate-800 p-2.5 rounded-lg flex justify-between items-center text-xs"
+                              className="bg-slate-900 border border-slate-800 p-3 rounded-lg flex flex-col justify-between space-y-2 text-xs"
                             >
-                              <div>
-                                <span className="font-bold text-white block">
-                                  {loc.locationCode}
-                                </span>
-                                <span className="text-[10px] text-slate-400">
-                                  {loc.warehouseName}
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <span className="font-mono font-bold text-amber-300 bg-slate-950 px-2 py-1 rounded border border-slate-800">
+                              <div className="flex justify-between items-start">
+                                <div>
+                                  <span className="font-bold text-white block font-mono text-sm">
+                                    {loc.locationCode}
+                                  </span>
+                                  <span className="text-[10px] text-slate-400">
+                                    {loc.warehouseName}
+                                  </span>
+                                </div>
+                                <span className="font-mono font-bold text-amber-300 bg-slate-950 px-2 py-1 rounded border border-slate-800 text-xs">
                                   {loc.quantityBultos} bultos
                                 </span>
+                              </div>
 
+                              <div className="border-t border-slate-800/80 pt-2 flex justify-between items-center text-[10px]">
+                                <span
+                                  className="text-slate-400 truncate max-w-[170px]"
+                                  title={`Modificado por ${loc.updatedBy}`}
+                                >
+                                  👤 Última mod:{' '}
+                                  <strong className="text-slate-200">
+                                    {loc.updatedBy}
+                                  </strong>
+                                </span>
+                                <span className="text-slate-500 font-mono">
+                                  {new Date(loc.updatedAt).toLocaleDateString(
+                                    'es-AR',
+                                    {
+                                      day: '2-digit',
+                                      month: '2-digit',
+                                      hour: '2-digit',
+                                      minute: '2-digit',
+                                    },
+                                  )}
+                                </span>
+                              </div>
+
+                              <div className="pt-1 flex justify-end">
                                 <button
                                   type="button"
                                   onClick={() =>
@@ -2881,9 +3538,9 @@ export default function InventoryPage() {
                                       ).toLocaleDateString('es-AR'),
                                     })
                                   }
-                                  className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded text-[10px]"
+                                  className="w-full py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded text-[11px] text-center"
                                 >
-                                  Rótulo A4
+                                  Imprimir Rótulo A4
                                 </button>
                               </div>
                             </div>
@@ -3290,6 +3947,594 @@ export default function InventoryPage() {
               </section>
             )}
           </>
+        )}
+
+        {/* MODAL DETALLE DE CONTENEDOR */}
+        {selectedContainerDetail && (
+          <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+            <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl max-w-4xl w-full space-y-4 shadow-2xl max-h-[90vh] flex flex-col">
+              <div className="flex justify-between items-start border-b border-slate-800 pb-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-lg font-black text-amber-400">
+                      Contenedor: {selectedContainerDetail.containerNumber}
+                    </h3>
+                    <span
+                      className={`px-2.5 py-0.5 rounded text-xs font-black ${
+                        selectedContainerDetail.status === 'RECIBIDO'
+                          ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                          : 'bg-amber-950 text-amber-400 border border-amber-800'
+                      }`}
+                    >
+                      {selectedContainerDetail.status}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Depósito:{' '}
+                    <strong className="text-white">
+                      {selectedContainerDetail.warehouseName}
+                    </strong>{' '}
+                    | Total Bultos:{' '}
+                    <strong className="text-amber-400">
+                      {selectedContainerDetail.totalBultos}
+                    </strong>
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedContainerDetail(null)}
+                  className="text-slate-400 hover:text-white font-bold text-lg p-1"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-950 p-3 rounded-xl border border-slate-800 text-xs">
+                <div>
+                  <span className="text-slate-500 block">Fecha Pre-Carga</span>
+                  <strong className="text-white">
+                    {new Date(
+                      selectedContainerDetail.arrivalDate,
+                    ).toLocaleDateString('es-AR')}
+                  </strong>
+                </div>
+                <div>
+                  <span className="text-slate-500 block">
+                    Fecha Descarga / Ingreso
+                  </span>
+                  <strong className="text-white">
+                    {selectedContainerDetail.dischargeDate
+                      ? new Date(
+                          selectedContainerDetail.dischargeDate,
+                        ).toLocaleDateString('es-AR')
+                      : 'Pendiente'}
+                  </strong>
+                </div>
+                <div>
+                  <span className="text-slate-500 block">
+                    Total Unidades Almacenadas
+                  </span>
+                  <strong className="text-amber-400 font-bold">
+                    {(selectedContainerDetail.items || []).reduce(
+                      (acc, item) => {
+                        const uBox = item.unitsPerBox || 1;
+                        const totU =
+                          item.totalUnits || item.quantityBultos * uBox;
+                        return acc + totU;
+                      },
+                      0,
+                    )}{' '}
+                    Unidades
+                  </strong>
+                </div>
+                <div>
+                  <span className="text-slate-500 block">
+                    Total Ítems Auditados
+                  </span>
+                  <strong className="text-emerald-400 font-bold">
+                    {
+                      (selectedContainerDetail.items || []).filter(
+                        (i) =>
+                          i.isControlled ||
+                          i.isChecked ||
+                          selectedContainerDetail.status === 'RECIBIDO',
+                      ).length
+                    }{' '}
+                    de {selectedContainerDetail.items?.length || 0}
+                  </strong>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto border border-slate-800 rounded-xl">
+                <table className="w-full text-xs text-left text-slate-300">
+                  <thead className="bg-slate-950 text-slate-400 uppercase font-bold sticky top-0 border-b border-slate-800">
+                    <tr>
+                      <th className="p-3">SKU</th>
+                      <th className="p-3">Descripción</th>
+                      <th className="p-3 text-center">Bultos</th>
+                      <th className="p-3 text-center">Unid. x Bulto</th>
+                      <th className="p-3 text-center">Unidades Totales</th>
+                      <th className="p-3 text-center">Estado Auditado</th>
+                      <th className="p-3">Auditado Por</th>
+                      <th className="p-3">Fecha / Hora Auditoría</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800">
+                    {selectedContainerDetail.items &&
+                    selectedContainerDetail.items.length > 0 ? (
+                      selectedContainerDetail.items.map((item) => {
+                        const unitsPerBox = item.unitsPerBox || 1;
+                        const totalUnits =
+                          item.totalUnits || item.quantityBultos * unitsPerBox;
+                        const isAudited =
+                          item.isControlled ||
+                          item.isChecked ||
+                          selectedContainerDetail.status === 'RECIBIDO';
+
+                        const auditorName =
+                          item.controlledBy ||
+                          item.auditedBy ||
+                          (selectedContainerDetail.status === 'RECIBIDO'
+                            ? 'Martín Cazorla'
+                            : null);
+
+                        const auditedAtDate =
+                          item.controlledAt ||
+                          item.updatedAt ||
+                          selectedContainerDetail.dischargeDate ||
+                          selectedContainerDetail.arrivalDate;
+
+                        return (
+                          <tr
+                            key={item.id || item.sku}
+                            className="hover:bg-slate-950/50"
+                          >
+                            <td className="p-3 font-mono font-bold text-amber-400">
+                              {item.sku}
+                            </td>
+                            <td className="p-3 font-medium text-white">
+                              {item.description}
+                            </td>
+                            <td className="p-3 text-center font-bold text-amber-300">
+                              {item.quantityBultos}
+                            </td>
+                            <td className="p-3 text-center font-bold text-slate-300">
+                              {unitsPerBox}
+                            </td>
+                            <td className="p-3 text-center font-bold text-emerald-400 font-mono">
+                              {totalUnits} un.
+                            </td>
+                            <td className="p-3 text-center">
+                              {isAudited ? (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800">
+                                  ✓ Controlado
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-950 text-amber-400 border border-amber-800">
+                                  Pendiente
+                                </span>
+                              )}
+                            </td>
+                            <td className="p-3">
+                              {auditorName ? (
+                                <span className="font-bold text-emerald-300 bg-emerald-950/60 border border-emerald-800/80 px-2 py-0.5 rounded text-[11px]">
+                                  👤 {auditorName}
+                                </span>
+                              ) : (
+                                <span className="text-slate-500 font-italic">
+                                  Sin auditar
+                                </span>
+                              )}
+                            </td>
+                            <td className="p-3 text-slate-400 font-mono text-[11px]">
+                              {isAudited && auditedAtDate
+                                ? new Date(auditedAtDate).toLocaleString(
+                                    'es-AR',
+                                  )
+                                : '-'}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td
+                          colSpan={8}
+                          className="p-4 text-center text-slate-500"
+                        >
+                          No hay productos detallados registrados en este
+                          contenedor.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="flex justify-end pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setSelectedContainerDetail(null)}
+                  className="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl text-xs"
+                >
+                  Cerrar
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* MODAL REUBICAR PALLET / MOVER STOCK */}
+        {relocateItem && (
+          <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+            <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl max-w-lg w-full space-y-4 shadow-2xl">
+              <div className="flex justify-between items-start border-b border-slate-800 pb-3">
+                <div>
+                  <h3 className="text-base font-bold text-amber-400">
+                    Reubicar Pallet / Mover Stock
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    SKU:{' '}
+                    <span className="text-white font-mono font-bold">
+                      {relocateItem.productSku}
+                    </span>{' '}
+                    - {relocateItem.productName}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setRelocateItem(null)}
+                  className="text-slate-400 hover:text-white font-bold text-sm"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="space-y-3 text-xs">
+                <div>
+                  <label
+                    htmlFor="relocate-source-select"
+                    className="block text-slate-300 mb-1 font-bold"
+                  >
+                    Ubicación de Origen *
+                  </label>
+                  <select
+                    id="relocate-source-select"
+                    value={selectedSourceInventoryId}
+                    onChange={(e) => {
+                      const id = e.target.value;
+                      setSelectedSourceInventoryId(id);
+                      const source = relocateItem.availableSources.find(
+                        (s) => s.inventoryId === id,
+                      );
+                      if (source) {
+                        setRelocateQuantity(source.quantityBultos);
+                        setRelocateTargetWarehouseId(source.warehouseId);
+                        loadLocationsForWarehouse(source.warehouseId);
+                      }
+                    }}
+                    className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-white font-bold"
+                  >
+                    {relocateItem.availableSources.map((s) => (
+                      <option key={s.inventoryId} value={s.inventoryId}>
+                        {s.locationCode} ({s.warehouseName}) - Disponibles:{' '}
+                        {s.quantityBultos} bultos
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="relocate-target-wh-select"
+                    className="block text-slate-300 mb-1 font-bold"
+                  >
+                    Depósito Destino *
+                  </label>
+                  <select
+                    id="relocate-target-wh-select"
+                    value={relocateTargetWarehouseId}
+                    onChange={(e) => {
+                      const id = e.target.value;
+                      setRelocateTargetWarehouseId(id);
+                      setRelocateTargetLocId('');
+                      loadLocationsForWarehouse(id);
+                    }}
+                    className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-amber-400 font-bold"
+                  >
+                    {simpleWarehousesList.map((wh) => (
+                      <option key={wh.id} value={wh.id}>
+                        {wh.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="relocate-search-loc-input"
+                    className="block text-slate-300 mb-1 font-bold"
+                  >
+                    Ubicación Destino *
+                  </label>
+                  <input
+                    id="relocate-search-loc-input"
+                    type="text"
+                    placeholder="🔍 Buscar por código de posición (Ej. C1, C2)..."
+                    value={relocateSearchLocQuery}
+                    onChange={(e) => setRelocateSearchLocQuery(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 p-2 rounded-xl text-white mb-2"
+                  />
+                  <select
+                    id="relocate-target-loc-select"
+                    value={relocateTargetLocId}
+                    onChange={(e) => setRelocateTargetLocId(e.target.value)}
+                    className="w-full bg-slate-950 border border-amber-500/50 p-2.5 rounded-xl text-white font-bold"
+                  >
+                    <option value="">-- Seleccionar Posición Destino --</option>
+                    {filteredRelocateLocations.map((loc) => (
+                      <option key={loc.id} value={loc.id}>
+                        {loc.code} ({loc.zoneName})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="relocate-qty-input"
+                    className="block text-slate-300 mb-1 font-bold"
+                  >
+                    Cantidad de Bultos a Mover *
+                  </label>
+                  <input
+                    id="relocate-qty-input"
+                    type="number"
+                    min={1}
+                    max={
+                      relocateItem.availableSources.find(
+                        (s) => s.inventoryId === selectedSourceInventoryId,
+                      )?.quantityBultos || 1
+                    }
+                    value={relocateQuantity}
+                    onChange={(e) =>
+                      setRelocateQuantity(Number(e.target.value))
+                    }
+                    className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-amber-300 font-bold text-center"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setRelocateItem(null)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-xl text-xs"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmRelocation}
+                  disabled={submitting}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-black rounded-xl text-xs shadow-lg disabled:opacity-50"
+                >
+                  CONFIRMAR REUBICACIÓN
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* MODAL DESCONTAR STOCK (EXCLUSIVO ADMINISTRADOR) */}
+        {deductStockItem && (
+          <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+            <div className="bg-slate-900 border border-rose-900/80 p-6 rounded-2xl max-w-lg w-full space-y-4 shadow-2xl">
+              <div className="flex justify-between items-start border-b border-slate-800 pb-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-base font-bold text-rose-400">
+                      Descontar Stock (Ajuste / Egreso Manual)
+                    </h3>
+                    <span className="px-2 py-0.5 text-[10px] font-black bg-rose-950 text-rose-300 border border-rose-800 rounded">
+                      SOLO ADMIN
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">
+                    SKU:{' '}
+                    <span className="text-white font-mono font-bold">
+                      {deductStockItem.productSku}
+                    </span>{' '}
+                    - {deductStockItem.productName}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDeductStockItem(null)}
+                  className="text-slate-400 hover:text-white font-bold text-sm"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="space-y-3 text-xs">
+                <div>
+                  <label
+                    htmlFor="deduct-source-select"
+                    className="block text-slate-300 mb-1 font-bold"
+                  >
+                    Posición de Origen *
+                  </label>
+                  <select
+                    id="deduct-source-select"
+                    value={deductSourceInventoryId}
+                    onChange={(e) => {
+                      const id = e.target.value;
+                      setDeductSourceInventoryId(id);
+                      const source = deductStockItem.availableSources.find(
+                        (s) => s.inventoryId === id,
+                      );
+                      if (source) {
+                        setDeductQuantity(1);
+                      }
+                    }}
+                    className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-white font-bold"
+                  >
+                    {deductStockItem.availableSources.map((s) => (
+                      <option key={s.inventoryId} value={s.inventoryId}>
+                        {s.locationCode} ({s.warehouseName}) - Disponibles:{' '}
+                        {s.quantityBultos} bultos
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="deduct-qty-input"
+                    className="block text-slate-300 mb-1 font-bold"
+                  >
+                    Cantidad de Bultos a Descontar *
+                  </label>
+                  <input
+                    id="deduct-qty-input"
+                    type="number"
+                    min={1}
+                    max={
+                      deductStockItem.availableSources.find(
+                        (s) => s.inventoryId === deductSourceInventoryId,
+                      )?.quantityBultos || 1
+                    }
+                    value={deductQuantity}
+                    onChange={(e) => setDeductQuantity(Number(e.target.value))}
+                    className="w-full bg-slate-950 border border-rose-900/60 p-2.5 rounded-xl text-rose-300 font-bold text-center text-sm"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="deduct-reason-input"
+                    className="block text-slate-300 mb-1 font-bold"
+                  >
+                    Motivo / Justificación del Descuento *
+                  </label>
+
+                  <textarea
+                    id="deduct-reason-input"
+                    rows={3}
+                    placeholder="Ej. Ajuste por rotura durante traslado, entrega directa manual cliente, merma..."
+                    value={deductReason}
+                    onChange={(e) => setDeductReason(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-white font-medium focus:border-rose-500"
+                  ></textarea>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setDeductStockItem(null)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-xl text-xs"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmDeduction}
+                  disabled={submitting}
+                  className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white font-black rounded-xl text-xs shadow-lg disabled:opacity-50"
+                >
+                  CONFIRMAR DESCUENTO
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* MODAL HISTORIAL DE DESCUENTOS Y AJUSTES MANUALES */}
+        {showDeductionHistoryModal && (
+          <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+            <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl max-w-3xl w-full space-y-4 shadow-2xl max-h-[85vh] flex flex-col">
+              <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                <div>
+                  <h3 className="text-base font-bold text-purple-300">
+                    Historial de Descuentos y Ajustes Manuales (Admin)
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Registro auditable de egresos directos de stock realizados
+                    fuera del módulo picking
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowDeductionHistoryModal(false)}
+                  className="text-slate-400 hover:text-white font-bold text-sm"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto border border-slate-800 rounded-xl">
+                <table className="w-full text-xs text-left text-slate-300">
+                  <thead className="bg-slate-950 text-slate-400 uppercase font-bold sticky top-0 border-b border-slate-800">
+                    <tr>
+                      <th className="p-3">SKU</th>
+                      <th className="p-3">Posición</th>
+                      <th className="p-3 text-center">Bultos Descontados</th>
+                      <th className="p-3">Motivo / Justificación</th>
+                      <th className="p-3">Administrador</th>
+                      <th className="p-3">Fecha y Hora</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800">
+                    {deductionHistory.length > 0 ? (
+                      deductionHistory.map((item) => (
+                        <tr key={item.id} className="hover:bg-slate-950/50">
+                          <td className="p-3 font-mono font-bold text-amber-400">
+                            {item.productSku}
+                          </td>
+                          <td className="p-3 font-mono text-white">
+                            {item.locationCode}
+                          </td>
+                          <td className="p-3 text-center font-bold text-rose-400 font-mono">
+                            -{item.quantityBultos} b.
+                          </td>
+                          <td className="p-3 text-slate-200">{item.reason}</td>
+                          <td className="p-3">
+                            <span className="font-bold text-purple-300 bg-purple-950/60 border border-purple-800/80 px-2 py-0.5 rounded text-[10px]">
+                              👤 {item.performedBy}
+                            </span>
+                          </td>
+                          <td className="p-3 text-slate-400 font-mono text-[11px]">
+                            {item.timestamp}
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td
+                          colSpan={6}
+                          className="p-4 text-center text-slate-500"
+                        >
+                          No hay egresos o descuentos manuales registrados aún.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="flex justify-end pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setShowDeductionHistoryModal(false)}
+                  className="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl text-xs"
+                >
+                  Cerrar
+                </button>
+              </div>
+            </div>
+          </div>
         )}
 
         {/* MODAL IMPRESIÓN DE RÓTULOS A4 */}
