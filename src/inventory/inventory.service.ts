@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { InboundDto, CreateWarehouseDto } from './dto/inbound.dto';
 import { CreateManualStockDto } from './dto/create-manual-stock.dto';
+import { TransferStockDto } from './dto/transfer-stock.dto';
 
 interface InventoryReduceItem {
   quantity: number;
@@ -640,31 +641,51 @@ export class InventoryService {
   }
 
   // MOVER STOCK DE UNA UBICACIÓN/DEPÓSITO A OTRO
-  async transferStock(dto: {
-    inventoryId: string;
-    targetLocationId: string;
-    targetWarehouseId?: string;
-    quantityBultos: number;
-    userId?: string;
-  }) {
-    const {
-      inventoryId,
-      targetLocationId,
-      targetWarehouseId,
-      quantityBultos,
-      userId,
-    } = dto;
+  async transferStock(dto: TransferStockDto | any) {
+    const inventoryId = dto.inventoryId;
+    const productId = dto.productId;
+    const originWarehouseId = dto.originWarehouseId || dto.warehouseId;
+    const originLocationId = dto.originLocationId || dto.sourceLocationId;
+    const destinationWarehouseId =
+      dto.destinationWarehouseId || dto.targetWarehouseId;
+    const destinationLocationId =
+      dto.destinationLocationId || dto.targetLocationId;
+    const quantityBultos = dto.quantity || dto.quantityBultos;
+    const userId = dto.userId;
 
-    const sourceInv = await this.prisma.inventory.findUnique({
-      where: { id: inventoryId },
-      include: { product: true },
-    });
+    if (!quantityBultos || quantityBultos <= 0) {
+      throw new BadRequestException('La cantidad a mover debe ser mayor a 0.');
+    }
 
-    if (!sourceInv)
-      throw new NotFoundException('Inventario de origen no encontrado.');
+    // 1. Buscar el inventario de origen (por ID directo o combinación de claves)
+    let sourceInv = null;
+    if (inventoryId) {
+      sourceInv = await this.prisma.inventory.findUnique({
+        where: { id: inventoryId },
+        include: { product: true },
+      });
+    }
+
+    if (!sourceInv && originWarehouseId && originLocationId && productId) {
+      sourceInv = await this.prisma.inventory.findFirst({
+        where: {
+          warehouseId: originWarehouseId,
+          locationId: originLocationId,
+          productId: productId,
+        },
+        include: { product: true },
+      });
+    }
+
+    if (!sourceInv) {
+      throw new NotFoundException(
+        'No se encontró el registro de inventario en la ubicación de origen especificada.',
+      );
+    }
+
     if (sourceInv.quantity < quantityBultos) {
       throw new BadRequestException(
-        'La cantidad a mover supera el stock disponible en esta ubicación.',
+        `La cantidad a mover (${quantityBultos}) supera el stock disponible (${sourceInv.quantity}) en la ubicación origen.`,
       );
     }
 
@@ -678,23 +699,27 @@ export class InventoryService {
       activeUser = await this.prisma.user.findFirst();
     }
 
-    if (!activeUser)
+    if (!activeUser) {
       throw new BadRequestException('Usuario no válido en el sistema.');
+    }
 
     return this.prisma.$transaction(async (tx) => {
       const targetLocation = await tx.location.findUnique({
-        where: { id: targetLocationId },
+        where: { id: destinationLocationId },
       });
 
-      if (!targetLocation)
+      if (!targetLocation) {
         throw new NotFoundException('Ubicación destino no encontrada.');
+      }
 
-      const destinationWarehouseId =
-        targetWarehouseId || targetLocation.warehouseId;
+      const finalTargetWarehouseId =
+        destinationWarehouseId || targetLocation.warehouseId;
 
-      // 1. Restar o eliminar stock del origen
+      // 2. Restar o eliminar stock de la ubicación de origen
       if (sourceInv.quantity === quantityBultos) {
-        await tx.inventory.delete({ where: { id: sourceInv.id } });
+        await tx.inventory.delete({
+          where: { id: sourceInv.id },
+        });
       } else {
         await tx.inventory.update({
           where: { id: sourceInv.id },
@@ -702,12 +727,12 @@ export class InventoryService {
         });
       }
 
-      // 2. Incrementar o crear registro en el destino
+      // 3. Incrementar o crear registro de stock en la ubicación destino
       const targetInv = await tx.inventory.findFirst({
         where: {
-          warehouseId: destinationWarehouseId,
+          warehouseId: finalTargetWarehouseId,
           productId: sourceInv.productId,
-          locationId: targetLocationId,
+          locationId: destinationLocationId,
         },
       });
 
@@ -719,22 +744,22 @@ export class InventoryService {
       } else {
         await tx.inventory.create({
           data: {
-            warehouseId: destinationWarehouseId,
+            warehouseId: finalTargetWarehouseId,
             productId: sourceInv.productId,
-            locationId: targetLocationId,
+            locationId: destinationLocationId,
             quantity: quantityBultos,
             lotNumber: sourceInv.lotNumber,
           },
         });
       }
 
-      // 3. Registrar el movimiento
+      // 4. Registrar auditoría del movimiento
       await tx.stockMovement.create({
         data: {
           productId: sourceInv.productId,
-          warehouseId: destinationWarehouseId,
+          warehouseId: finalTargetWarehouseId,
           sourceLocationId: sourceInv.locationId,
-          targetLocationId: targetLocationId,
+          targetLocationId: destinationLocationId,
           userId: activeUser.id,
           type: 'TRANSFER_IN',
           quantity: quantityBultos,
@@ -742,7 +767,10 @@ export class InventoryService {
         },
       });
 
-      return { success: true, message: 'Stock reubicado correctamente.' };
+      return {
+        success: true,
+        message: 'Stock reubicado correctamente sin duplicación.',
+      };
     });
   }
 

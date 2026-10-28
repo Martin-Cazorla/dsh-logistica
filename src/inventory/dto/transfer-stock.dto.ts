@@ -2,6 +2,10 @@ import { IsString, IsNotEmpty, IsInt, Min, IsOptional } from 'class-validator';
 
 export class TransferStockDto {
   @IsString()
+  @IsOptional()
+  inventoryId?: string;
+
+  @IsString()
   @IsNotEmpty()
   productId: string;
 
@@ -30,6 +34,6 @@ export class TransferStockDto {
   notes?: string;
 
   @IsString()
-  @IsNotEmpty()
-  userId: string;
+  @IsOptional()
+  userId?: string;
 }
