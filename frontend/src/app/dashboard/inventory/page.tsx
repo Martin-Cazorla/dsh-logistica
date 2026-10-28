@@ -100,7 +100,6 @@ export default function InventoryPage() {
     'MALLA' | 'INBOUND' | 'HISTORIAL' | 'STOCK' | 'CONFIG'
   >('MALLA');
 
-  // Rol del usuario autenticado
   const [userRole] = useState<'ADMIN' | 'WAREHOUSE_MANAGER' | 'PICKER'>(
     'ADMIN',
   );
@@ -231,6 +230,9 @@ export default function InventoryPage() {
     useState<string>('');
   const [relocateTargetWarehouseId, setRelocateTargetWarehouseId] =
     useState<string>('');
+  const [relocateTargetLocations, setRelocateTargetLocations] = useState<
+    PhysicalLocation[]
+  >([]);
   const [relocateTargetLocId, setRelocateTargetLocId] = useState<string>('');
   const [relocateSearchLocQuery, setRelocateSearchLocQuery] =
     useState<string>('');
@@ -254,6 +256,8 @@ export default function InventoryPage() {
   const [deductReason, setDeductReason] = useState<string>('');
   const [showDeductionHistoryModal, setShowDeductionHistoryModal] =
     useState<boolean>(false);
+  const [deductionSearchQuery, setDeductionSearchQuery] = useState<string>('');
+  const [deductionHistoryPage, setDeductionHistoryPage] = useState<number>(1);
 
   // ---------------------------------------------------------------------------
   // ESTADOS: TAB 5 - MANTENIMIENTO Y CONFIGURACIÓN DE UBICACIONES
@@ -327,7 +331,6 @@ export default function InventoryPage() {
       setSimpleWarehousesList(whList);
       setContainersHistory(contData as ContainerHistoryItem[]);
 
-      // Recuperar ajustes locales de stock si el backend no los persiste todavía
       let currentStock = stData;
       try {
         const localOverrides = localStorage.getItem('dsh_stock_overrides');
@@ -457,6 +460,23 @@ export default function InventoryPage() {
     }
   }, [targetConfigWhId, loadLocationsForWarehouse]);
 
+  // Carga dinámica de ubicaciones destino en modal de reubicación inter-depósito
+  useEffect(() => {
+    if (relocateTargetWarehouseId) {
+      inventoryService
+        .getAvailableLocations(relocateTargetWarehouseId)
+        .then((locs) => setRelocateTargetLocations(locs))
+        .catch((err) =>
+          console.error(
+            'Error al cargar ubicaciones del depósito destino:',
+            err,
+          ),
+        );
+    } else {
+      setRelocateTargetLocations([]);
+    }
+  }, [relocateTargetWarehouseId]);
+
   useEffect(() => {
     if (selectedPendingContainerId) {
       if (socket) {
@@ -482,20 +502,40 @@ export default function InventoryPage() {
               const hasComponents = componentsList.length > 0;
               const isCombo = Boolean(i.isCombo || hasComponents);
 
+              const historicProduct = stockList.find(
+                (s) => s.productSku.toUpperCase() === i.sku.toUpperCase(),
+              );
+
+              const defaultUnits =
+                i.unitsPerBox || historicProduct?.unitsPerBox || 1;
+              const defaultWeight = historicProduct?.weightPerBultoKg || 10;
+              const defaultLength = historicProduct?.lengthCm || 40;
+              const defaultWidth = historicProduct?.widthCm || 30;
+              const defaultHeight = historicProduct?.heightCm || 30;
+              const defaultVol = historicProduct?.volumePerBultoM3 || 0.036;
+
               let initialPallets: PhysicalControlPallet[] = [];
 
               if (hasComponents) {
                 componentsList.forEach((comp) => {
                   const compTotalBultos = qtyBultos * comp.quantityPerCombo;
+                  const historicComp = stockList.find(
+                    (s) =>
+                      s.productSku.toUpperCase() ===
+                      comp.childSku.toUpperCase(),
+                  );
+
                   initialPallets.push({
                     palletIndex: initialPallets.length + 1,
                     quantityBultos: compTotalBultos,
-                    unitsPerBox: 1,
-                    lengthCm: 40,
-                    widthCm: 30,
-                    heightCm: 30,
-                    weightPerBultoKg: 10,
-                    volumePerBultoM3: 0.036,
+                    unitsPerBox: historicComp?.unitsPerBox || 1,
+                    lengthCm: historicComp?.lengthCm || defaultLength,
+                    widthCm: historicComp?.widthCm || defaultWidth,
+                    heightCm: historicComp?.heightCm || defaultHeight,
+                    weightPerBultoKg:
+                      historicComp?.weightPerBultoKg || defaultWeight,
+                    volumePerBultoM3:
+                      historicComp?.volumePerBultoM3 || defaultVol,
                     locationId: '',
                     childSku: comp.childSku,
                   });
@@ -505,12 +545,12 @@ export default function InventoryPage() {
                   {
                     palletIndex: 1,
                     quantityBultos: qtyBultos,
-                    unitsPerBox: i.unitsPerBox || 1,
-                    lengthCm: 40,
-                    widthCm: 30,
-                    heightCm: 30,
-                    weightPerBultoKg: 10,
-                    volumePerBultoM3: 0.036,
+                    unitsPerBox: defaultUnits,
+                    lengthCm: defaultLength,
+                    widthCm: defaultWidth,
+                    heightCm: defaultHeight,
+                    weightPerBultoKg: defaultWeight,
+                    volumePerBultoM3: defaultVol,
                     locationId: '',
                   },
                 ];
@@ -518,14 +558,15 @@ export default function InventoryPage() {
 
               return {
                 sku: i.sku || '',
-                description: i.description || '',
+                description:
+                  i.description || historicProduct?.productName || '',
                 quantityBultos: qtyBultos,
-                unitsPerBox: i.unitsPerBox || 1,
-                lengthCm: 40,
-                widthCm: 30,
-                heightCm: 30,
-                weightPerBultoKg: 10,
-                volumePerBultoM3: 0.036,
+                unitsPerBox: defaultUnits,
+                lengthCm: defaultLength,
+                widthCm: defaultWidth,
+                heightCm: defaultHeight,
+                weightPerBultoKg: defaultWeight,
+                volumePerBultoM3: defaultVol,
                 hasShowroomSample: false,
                 sampleUnitsCount: 0,
                 isChecked: Boolean(i.isControlled || i.isChecked),
@@ -549,6 +590,7 @@ export default function InventoryPage() {
     containersHistory,
     socket,
     simpleWarehousesList,
+    stockList,
     loadLocationsForWarehouse,
   ]);
 
@@ -600,7 +642,7 @@ export default function InventoryPage() {
     return filteredHistoryContainers.slice(start, start + ITEMS_PER_PAGE);
   }, [filteredHistoryContainers, historyPage]);
 
-  // CONSOLIDACIÓN DE STOCK CON CÁLCULO EN TIEMPO REAL
+  // CONSOLIDACIÓN DE STOCK CON CÁLCULO EN TIEMPO REAL Y PURGA DE UBICACIONES EN 0
   const consolidatedStockMap = useMemo(() => {
     const map = new Map<
       string,
@@ -627,6 +669,8 @@ export default function InventoryPage() {
       (
         st: InventoryStock & { updatedBy?: string; lastModifiedBy?: string },
       ) => {
+        if (st.quantityBultos <= 0) return;
+
         const key = st.productSku;
         if (!map.has(key)) {
           map.set(key, {
@@ -654,7 +698,7 @@ export default function InventoryPage() {
       },
     );
 
-    return Array.from(map.values());
+    return Array.from(map.values()).filter((prod) => prod.totalBultos > 0);
   }, [stockList]);
 
   const filteredConsolidatedStock = useMemo(() => {
@@ -672,6 +716,25 @@ export default function InventoryPage() {
     const start = (stockPage - 1) * ITEMS_PER_PAGE;
     return filteredConsolidatedStock.slice(start, start + ITEMS_PER_PAGE);
   }, [filteredConsolidatedStock, stockPage]);
+
+  // HISTORIAL DE DESCUENTOS FILTRADO Y PAGINADO
+  const filteredDeductionHistory = useMemo(() => {
+    const q = deductionSearchQuery.toLowerCase().trim();
+    if (!q) return deductionHistory;
+
+    return deductionHistory.filter(
+      (h) =>
+        h.productSku.toLowerCase().includes(q) ||
+        h.reason.toLowerCase().includes(q) ||
+        h.locationCode.toLowerCase().includes(q) ||
+        h.performedBy.toLowerCase().includes(q),
+    );
+  }, [deductionHistory, deductionSearchQuery]);
+
+  const paginatedDeductionHistory = useMemo(() => {
+    const start = (deductionHistoryPage - 1) * ITEMS_PER_PAGE;
+    return filteredDeductionHistory.slice(start, start + ITEMS_PER_PAGE);
+  }, [filteredDeductionHistory, deductionHistoryPage]);
 
   const visibleLocationsInMaintenance = useMemo(() => {
     if (selectedAreaFilter === 'ALL') return locations;
@@ -714,7 +777,8 @@ export default function InventoryPage() {
       const stockInLoc = stockList.filter(
         (st) =>
           st.locationId === loc.id &&
-          st.warehouseId === selectedMallaWarehouse.id,
+          st.warehouseId === selectedMallaWarehouse.id &&
+          st.quantityBultos > 0,
       );
 
       const totalBultosLoc = stockInLoc.reduce(
@@ -827,15 +891,15 @@ export default function InventoryPage() {
 
   const filteredRelocateLocations = useMemo(() => {
     const q = relocateSearchLocQuery.toLowerCase().trim();
-    if (!q) return locations.slice(0, 30);
-    return locations
+    if (!q) return relocateTargetLocations.slice(0, 30);
+    return relocateTargetLocations
       .filter(
         (l) =>
           l.code.toLowerCase().includes(q) ||
           (l.zoneName && l.zoneName.toLowerCase().includes(q)),
       )
       .slice(0, 30);
-  }, [locations, relocateSearchLocQuery]);
+  }, [relocateTargetLocations, relocateSearchLocQuery]);
 
   // ---------------------------------------------------------------------------
   // MANEJADOR ROBUSTO DE DESCUENTO DE STOCK CON PERSISTENCIA EN LOCALSTORAGE
@@ -866,7 +930,6 @@ export default function InventoryPage() {
 
     setSubmitting(true);
     try {
-      // 1. Intento de sincronización con el servidor
       try {
         if (
           typeof (inventoryService as unknown as Record<string, unknown>)
@@ -897,25 +960,24 @@ export default function InventoryPage() {
         );
       }
 
-      // 2. Calcular nuevo stock (Ej: 200 - 196 = 4)
       const newStockQuantity = source.quantityBultos - amountToDeduct;
 
-      // 3. Actualizar el estado de React en memoria
       setStockList((prevStock) =>
-        prevStock.map((item) => {
-          if (item.id === deductSourceInventoryId) {
-            return {
-              ...item,
-              quantityBultos: newStockQuantity,
-              updatedAt: new Date().toISOString(),
-              updatedBy: currentUser.name,
-            };
-          }
-          return item;
-        }),
+        prevStock
+          .map((item) => {
+            if (item.id === deductSourceInventoryId) {
+              return {
+                ...item,
+                quantityBultos: newStockQuantity,
+                updatedAt: new Date().toISOString(),
+                updatedBy: currentUser.name,
+              };
+            }
+            return item;
+          })
+          .filter((item) => item.quantityBultos > 0),
       );
 
-      // 4. Persistir override de stock en localStorage para resistir recargas (F5)
       try {
         const existingOverrides = JSON.parse(
           localStorage.getItem('dsh_stock_overrides') || '{}',
@@ -929,7 +991,6 @@ export default function InventoryPage() {
         console.error('Error guardando override de stock en localStorage', e);
       }
 
-      // 5. Crear y guardar entrada en el historial de auditoría
       const newHistoryEntry: StockDeductionHistory = {
         id: `deduct-${Date.now()}`,
         productSku: deductStockItem.productSku,
@@ -943,7 +1004,6 @@ export default function InventoryPage() {
       const updatedHistory = [newHistoryEntry, ...deductionHistory];
       setDeductionHistory(updatedHistory);
 
-      // Persistir el historial en localStorage
       try {
         localStorage.setItem(
           'dsh_deduction_history',
@@ -957,7 +1017,6 @@ export default function InventoryPage() {
         `Se descontaron ${amountToDeduct} bultos del SKU ${deductStockItem.productSku} correctamente. Stock restante: ${newStockQuantity} bultos.`,
       );
 
-      // Limpiar formulario y cerrar modal
       setDeductStockItem(null);
       setDeductSourceInventoryId('');
       setDeductQuantity(1);
@@ -974,7 +1033,7 @@ export default function InventoryPage() {
   };
 
   // ---------------------------------------------------------------------------
-  // MANEJADORES DE EVENTOS DE INTERFAZ GENERALES
+  // MANEJADORES DE EVENTOS DE INTERFAZ GENERALES Y AUTO-COMPLETADO DE SKU
   // ---------------------------------------------------------------------------
   const toggleItemAccordion = (sku: string) => {
     const lock = activeLocks[sku];
@@ -1011,6 +1070,28 @@ export default function InventoryPage() {
     setPackingList((prev) => {
       const updated = [...prev];
       const item = { ...updated[index], [field]: value };
+
+      if (field === 'productSku' && typeof value === 'string') {
+        const cleanSku = value.trim().toUpperCase();
+
+        if (cleanSku) {
+          const historicProduct = stockList.find(
+            (s) => s.productSku.toUpperCase() === cleanSku,
+          );
+
+          if (historicProduct) {
+            item.productName = historicProduct.productName || item.productName;
+            item.unitsPerBox = historicProduct.unitsPerBox || item.unitsPerBox;
+            item.weightPerBultoKg =
+              historicProduct.weightPerBultoKg || item.weightPerBultoKg;
+            item.lengthCm = historicProduct.lengthCm || item.lengthCm;
+            item.widthCm = historicProduct.widthCm || item.widthCm;
+            item.heightCm = historicProduct.heightCm || item.heightCm;
+            item.volumePerBultoM3 =
+              historicProduct.volumePerBultoM3 || item.volumePerBultoM3;
+          }
+        }
+      }
 
       if (
         field === 'isCombo' &&
@@ -1063,7 +1144,22 @@ export default function InventoryPage() {
       const item = { ...updated[itemIndex] };
       if (!item.components) return prev;
       const comps = [...item.components];
-      comps[compIndex] = { ...comps[compIndex], [field]: value };
+      const updatedComp = { ...comps[compIndex], [field]: value };
+
+      if (field === 'childSku' && typeof value === 'string') {
+        const cleanChildSku = value.trim().toUpperCase();
+        if (cleanChildSku) {
+          const historicComp = stockList.find(
+            (s) => s.productSku.toUpperCase() === cleanChildSku,
+          );
+          if (historicComp) {
+            updatedComp.description =
+              historicComp.productName || updatedComp.description;
+          }
+        }
+      }
+
+      comps[compIndex] = updatedComp;
       item.components = comps;
       updated[itemIndex] = item;
       return updated;
@@ -1143,6 +1239,11 @@ export default function InventoryPage() {
       const currentPallets = item.pallets || [];
       const defaultLoc = locations[0]?.id || '';
 
+      const targetSku = selectedChildSku || item.sku;
+      const historicMatch = stockList.find(
+        (s) => s.productSku.toUpperCase() === targetSku.toUpperCase(),
+      );
+
       const assignedBultos = currentPallets.reduce(
         (acc: number, p: PhysicalControlPallet) =>
           acc + (Number(p.quantityBultos) || 0),
@@ -1155,12 +1256,14 @@ export default function InventoryPage() {
         {
           palletIndex: currentPallets.length + 1,
           quantityBultos: remainingBultos > 0 ? remainingBultos : 1,
-          unitsPerBox: item.unitsPerBox || 1,
-          lengthCm: 40,
-          widthCm: 30,
-          heightCm: 30,
-          weightPerBultoKg: 10,
-          volumePerBultoM3: 0.036,
+          unitsPerBox: historicMatch?.unitsPerBox || item.unitsPerBox || 1,
+          lengthCm: historicMatch?.lengthCm || item.lengthCm || 40,
+          widthCm: historicMatch?.widthCm || item.widthCm || 30,
+          heightCm: historicMatch?.heightCm || item.heightCm || 30,
+          weightPerBultoKg:
+            historicMatch?.weightPerBultoKg || item.weightPerBultoKg || 10,
+          volumePerBultoM3:
+            historicMatch?.volumePerBultoM3 || item.volumePerBultoM3 || 0.036,
           locationId: defaultLoc,
           childSku: selectedChildSku,
         },
@@ -1948,7 +2051,7 @@ export default function InventoryPage() {
                           <input
                             id="malla-search-input"
                             type="text"
-                            placeholder="🔍 Buscar por posición o SKU..."
+                            placeholder="Buscar por posición o SKU..."
                             value={mallaCodeSearch}
                             onChange={(e) => setMallaCodeSearch(e.target.value)}
                             className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-mono"
@@ -1996,13 +2099,11 @@ export default function InventoryPage() {
                             className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-bold"
                           >
                             <option value="ALL">Todos los Estados</option>
-                            <option value="FULL">
-                              🔴 100% Llenos / Críticos
-                            </option>
+                            <option value="FULL">100% Llenos / Críticos</option>
                             <option value="PARTIAL">
-                              🟡 Parciales (A Consolidad/Unificar)
+                              Parciales (A Consolidar/Unificar)
                             </option>
-                            <option value="EMPTY">🟢 Vacíos (Libres)</option>
+                            <option value="EMPTY">Vacíos (Libres)</option>
                           </select>
                         </div>
                       </div>
@@ -2020,7 +2121,7 @@ export default function InventoryPage() {
 
                       <div className="bg-red-950/30 p-3 rounded-lg border border-red-900/50">
                         <span className="text-red-300 block text-[11px] font-bold">
-                          🔴 Racks/Pos. al 100% (Llenos)
+                          Racks/Pos. al 100% (Llenos)
                         </span>
                         <span className="text-lg font-black text-red-400 font-mono">
                           {mallaStats.full}
@@ -2029,7 +2130,7 @@ export default function InventoryPage() {
 
                       <div className="bg-amber-950/30 p-3 rounded-lg border border-amber-900/50">
                         <span className="text-amber-300 block text-[11px] font-bold">
-                          🟡 Racks Parciales (Unificables)
+                          Racks Parciales (Unificables)
                         </span>
                         <span className="text-lg font-black text-amber-400 font-mono">
                           {mallaStats.partial}
@@ -2038,7 +2139,7 @@ export default function InventoryPage() {
 
                       <div className="bg-emerald-950/30 p-3 rounded-lg border border-emerald-900/50">
                         <span className="text-emerald-300 block text-[11px] font-bold">
-                          🟢 Racks Vacíos (Disponibles)
+                          Racks Vacíos (Disponibles)
                         </span>
                         <span className="text-lg font-black text-emerald-400 font-mono">
                           {mallaStats.empty}
@@ -2110,30 +2211,28 @@ export default function InventoryPage() {
 
                             {loc.storedProducts.length > 0 ? (
                               <div className="border-t border-slate-800/80 pt-1.5 space-y-1">
-                                {loc.storedProducts
-                                  .slice(0, 2)
-                                  .map(
-                                    (
-                                      p: {
-                                        sku: string;
-                                        name: string;
-                                        bultos: number;
-                                      },
-                                      pIdx: number,
-                                    ) => (
-                                      <div
-                                        key={pIdx}
-                                        className="flex justify-between items-center text-[10px]"
-                                      >
-                                        <span className="font-mono font-bold text-amber-400 truncate max-w-[100px]">
-                                          {p.sku}
-                                        </span>
-                                        <span className="text-slate-300 font-bold">
-                                          {p.bultos} b.
-                                        </span>
-                                      </div>
-                                    ),
-                                  )}
+                                {loc.storedProducts.slice(0, 2).map(
+                                  (
+                                    p: {
+                                      sku: string;
+                                      name: string;
+                                      bultos: number;
+                                    },
+                                    pIdx: number,
+                                  ) => (
+                                    <div
+                                      key={pIdx}
+                                      className="flex justify-between items-center text-[10px]"
+                                    >
+                                      <span className="font-mono font-bold text-amber-400 truncate max-w-[100px]">
+                                        {p.sku}
+                                      </span>
+                                      <span className="text-slate-300 font-bold">
+                                        {p.bultos} b.
+                                      </span>
+                                    </div>
+                                  ),
+                                )}
                                 {loc.storedProducts.length > 2 && (
                                   <span className="text-[9px] text-slate-500 block text-center">
                                     + {loc.storedProducts.length - 2} productos
@@ -2144,7 +2243,7 @@ export default function InventoryPage() {
                             ) : (
                               <div className="border-t border-slate-800/60 pt-1 text-center">
                                 <span className="text-[10px] text-emerald-400/80 font-bold">
-                                  ✓ Posición Libre
+                                  Posición Libre
                                 </span>
                               </div>
                             )}
@@ -2321,7 +2420,7 @@ export default function InventoryPage() {
                               }
                               className="w-4 h-4 accent-purple-500 rounded"
                             />
-                            📦 ¿Es un Combo / Kit formado por varios SKUs Hijos?
+                            ¿Es un Combo / Kit formado por varios SKUs Hijos?
                           </label>
 
                           {item.isCombo && (
@@ -2405,7 +2504,7 @@ export default function InventoryPage() {
                                         }
                                         className="text-red-400 font-bold hover:text-red-300 px-2 py-1"
                                       >
-                                        ✕
+                                        X
                                       </button>
                                     )}
                                   </div>
@@ -2542,7 +2641,7 @@ export default function InventoryPage() {
                             <input
                               id="phase2-search-input"
                               type="text"
-                              placeholder="🔍 Buscar por SKU o Descripción..."
+                              placeholder="Buscar por SKU o Descripción..."
                               value={phase2SearchTerm}
                               onChange={(e) =>
                                 setPhase2SearchTerm(e.target.value)
@@ -2628,10 +2727,10 @@ export default function InventoryPage() {
                                             }`}
                                           >
                                             {missingBultos > 0
-                                              ? `⚠️ Faltan ${missingBultos} bulto(s) por palletizar`
+                                              ? `Faltan ${missingBultos} bulto(s) por palletizar`
                                               : missingBultos === 0
-                                                ? `✓ Bultos balanceados (${assignedBultos}/${item.quantityBultos})`
-                                                : `⚠️ Exceso de ${Math.abs(missingBultos)} bulto(s)`}
+                                                ? `Bultos balanceados (${assignedBultos}/${item.quantityBultos})`
+                                                : `Exceso de ${Math.abs(missingBultos)} bulto(s)`}
                                           </span>
                                         )}
                                       </div>
@@ -2645,13 +2744,13 @@ export default function InventoryPage() {
                                         </strong>
                                         {item.hasShowroomSample && (
                                           <span className="ml-2 text-purple-400 font-bold bg-purple-950/60 border border-purple-800/80 px-1.5 py-0.5 rounded text-[10px]">
-                                            🧪 Muestra Showroom (
+                                            Muestra Showroom (
                                             {item.sampleUnitsCount} un.)
                                           </span>
                                         )}
                                         {item.controlledBy && (
                                           <span className="ml-2 text-emerald-400 font-bold">
-                                            (✓ Auditado por {item.controlledBy})
+                                            (Auditado por {item.controlledBy})
                                           </span>
                                         )}
                                       </p>
@@ -2669,8 +2768,8 @@ export default function InventoryPage() {
                                         title="Marcar si este producto no vino en el contenedor"
                                       >
                                         {item.isOmitted
-                                          ? '↩ Restaurar SKU'
-                                          : '✕ Marcar 0 / Faltante'}
+                                          ? 'Restaurar SKU'
+                                          : 'X Marcar 0 / Faltante'}
                                       </button>
 
                                       {!item.isOmitted && (
@@ -2686,7 +2785,7 @@ export default function InventoryPage() {
                                           }`}
                                         >
                                           {item.isChecked
-                                            ? '✓ Controlado'
+                                            ? 'Controlado'
                                             : 'Marcar Controlado'}
                                         </button>
                                       )}
@@ -2699,9 +2798,7 @@ export default function InventoryPage() {
                                           }
                                           className="text-amber-400 font-bold text-xs ml-1"
                                         >
-                                          {isExpanded
-                                            ? '▲ Ocultar'
-                                            : '▼ Editar'}
+                                          {isExpanded ? 'Ocultar' : 'Editar'}
                                         </button>
                                       )}
                                     </div>
@@ -2738,7 +2835,7 @@ export default function InventoryPage() {
                                               }}
                                               className="w-4 h-4 accent-amber-500 rounded"
                                             />
-                                            🧪 ¿Extraer Muestras para Showroom /
+                                            ¿Extraer Muestras para Showroom /
                                             Control de Calidad?
                                           </label>
 
@@ -2775,7 +2872,7 @@ export default function InventoryPage() {
                                         {hasComponents && (
                                           <div className="bg-purple-950/30 border border-purple-800/50 p-3 rounded-lg space-y-2">
                                             <span className="text-xs font-bold text-purple-300 block">
-                                              📦 Desglose por Componentes (SKUs
+                                              Desglose por Componentes (SKUs
                                               Hijos)
                                             </span>
                                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
@@ -3050,7 +3147,7 @@ export default function InventoryPage() {
                                                       <div className="space-y-1">
                                                         <input
                                                           type="text"
-                                                          placeholder="🔍 Filtrar..."
+                                                          placeholder="Filtrar..."
                                                           value={
                                                             phase2LocationSearches[
                                                               keySearch
@@ -3260,8 +3357,7 @@ export default function InventoryPage() {
                               className="font-mono font-bold text-amber-400 hover:underline text-left"
                               onClick={() => setSelectedContainerDetail(c)}
                             >
-                              {c.containerNumber}{' '}
-                              <span aria-hidden="true">🔍</span>
+                              {c.containerNumber} (Ver Detalle)
                             </button>
                           </td>
                           <td className="p-3 font-bold text-white">
@@ -3368,10 +3464,13 @@ export default function InventoryPage() {
                     {deductionHistory.length > 0 && (
                       <button
                         type="button"
-                        onClick={() => setShowDeductionHistoryModal(true)}
+                        onClick={() => {
+                          setShowDeductionHistoryModal(true);
+                          setDeductionHistoryPage(1);
+                        }}
                         className="px-3 py-2 bg-purple-950 text-purple-300 border border-purple-800 hover:bg-purple-900 font-bold rounded-xl text-xs transition-colors"
                       >
-                        📋 Ver Historial Descuentos ({deductionHistory.length})
+                        Ver Historial Descuentos ({deductionHistory.length})
                       </button>
                     )}
 
@@ -3382,7 +3481,7 @@ export default function InventoryPage() {
                       <input
                         id="stock-search-input"
                         type="text"
-                        placeholder="🔍 Buscar por SKU o Producto..."
+                        placeholder="Buscar por SKU o Producto..."
                         value={stockSearchQuery}
                         onChange={(e) => {
                           setStockSearchQuery(e.target.value);
@@ -3422,130 +3521,90 @@ export default function InventoryPage() {
                           <button
                             type="button"
                             onClick={() => {
-                              const firstSource = prod.locations[0];
                               setRelocateItem({
                                 productSku: prod.productSku,
                                 productName: prod.productName,
                                 availableSources: prod.locations,
                               });
+                              const initialSourceWh =
+                                prod.locations[0]?.warehouseId ||
+                                simpleWarehousesList[0]?.id ||
+                                '';
                               setSelectedSourceInventoryId(
-                                firstSource?.inventoryId || '',
+                                prod.locations[0]?.inventoryId || '',
                               );
-                              setRelocateQuantity(
-                                firstSource?.quantityBultos || 1,
-                              );
-                              setRelocateTargetWarehouseId(
-                                firstSource?.warehouseId || '',
-                              );
+                              setRelocateTargetWarehouseId(initialSourceWh);
                               setRelocateTargetLocId('');
                               setRelocateSearchLocQuery('');
-
-                              if (firstSource) {
-                                loadLocationsForWarehouse(
-                                  firstSource.warehouseId,
-                                );
-                              }
                             }}
-                            className="px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white font-black rounded-xl text-xs shadow-md transition-colors"
+                            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-amber-400 border border-slate-700 font-bold rounded-lg text-xs"
                           >
-                            Reubicar Pallet / Mover
+                            Reubicar
                           </button>
 
                           {userRole === 'ADMIN' && (
                             <button
                               type="button"
                               onClick={() => {
-                                const firstSource = prod.locations[0];
                                 setDeductStockItem({
                                   productSku: prod.productSku,
                                   productName: prod.productName,
                                   availableSources: prod.locations,
                                 });
                                 setDeductSourceInventoryId(
-                                  firstSource?.inventoryId || '',
+                                  prod.locations[0]?.inventoryId || '',
                                 );
-                                setDeductQuantity(1);
-                                setDeductReason('');
                               }}
-                              className="px-3 py-2 bg-rose-700 hover:bg-rose-600 text-white font-black rounded-xl text-xs shadow-md transition-colors border border-rose-500/50"
-                              title="Opción exclusiva para Administradores"
+                              className="px-3 py-1.5 bg-red-950 hover:bg-red-900 text-red-300 border border-red-800 font-bold rounded-lg text-xs"
                             >
-                              ➖ Descontar Stock
+                              Descontar
                             </button>
                           )}
                         </div>
                       </div>
 
-                      <div className="space-y-2">
-                        <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
-                          Ubicaciones / Posiciones donde se encuentra guardado:
-                        </span>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                          {prod.locations.map((loc) => (
-                            <div
-                              key={loc.inventoryId}
-                              className="bg-slate-900 border border-slate-800 p-3 rounded-lg flex flex-col justify-between space-y-2 text-xs"
-                            >
-                              <div className="flex justify-between items-start">
-                                <div>
-                                  <span className="font-bold text-white block font-mono text-sm">
-                                    {loc.locationCode}
-                                  </span>
-                                  <span className="text-[10px] text-slate-400">
-                                    {loc.warehouseName}
-                                  </span>
-                                </div>
-                                <span className="font-mono font-bold text-amber-300 bg-slate-950 px-2 py-1 rounded border border-slate-800 text-xs">
-                                  {loc.quantityBultos} bultos
-                                </span>
-                              </div>
-
-                              <div className="border-t border-slate-800/80 pt-2 flex justify-between items-center text-[10px]">
-                                <span
-                                  className="text-slate-400 truncate max-w-[170px]"
-                                  title={`Modificado por ${loc.updatedBy}`}
-                                >
-                                  👤 Última mod:{' '}
-                                  <strong className="text-slate-200">
-                                    {loc.updatedBy}
-                                  </strong>
-                                </span>
-                                <span className="text-slate-500 font-mono">
-                                  {new Date(loc.updatedAt).toLocaleDateString(
-                                    'es-AR',
-                                    {
-                                      day: '2-digit',
-                                      month: '2-digit',
-                                      hour: '2-digit',
-                                      minute: '2-digit',
-                                    },
-                                  )}
-                                </span>
-                              </div>
-
-                              <div className="pt-1 flex justify-end">
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setPrintModalData({
-                                      productSku: prod.productSku,
-                                      productName: prod.productName,
-                                      quantityBultos: loc.quantityBultos,
-                                      locationCode: loc.locationCode,
-                                      warehouseName: loc.warehouseName,
-                                      date: new Date(
-                                        loc.updatedAt,
-                                      ).toLocaleDateString('es-AR'),
-                                    })
-                                  }
-                                  className="w-full py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded text-[11px] text-center"
-                                >
-                                  Imprimir Rótulo A4
-                                </button>
-                              </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                        {prod.locations.map((loc, lIdx) => (
+                          <div
+                            key={lIdx}
+                            className="bg-slate-900 border border-slate-800 p-3 rounded-lg flex justify-between items-center text-xs"
+                          >
+                            <div>
+                              <span className="font-mono font-bold text-white block">
+                                Posición: {loc.locationCode}
+                              </span>
+                              <span className="text-[10px] text-slate-400 block">
+                                {loc.warehouseName}
+                              </span>
+                              <span className="text-[9px] text-slate-500 block mt-0.5">
+                                Audit: {loc.updatedBy}
+                              </span>
                             </div>
-                          ))}
-                        </div>
+                            <div className="flex flex-col items-end gap-1">
+                              <span className="font-bold text-emerald-400 font-mono text-sm">
+                                {loc.quantityBultos} B.
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setPrintModalData({
+                                    productSku: prod.productSku,
+                                    productName: prod.productName,
+                                    quantityBultos: loc.quantityBultos,
+                                    locationCode: loc.locationCode,
+                                    warehouseName: loc.warehouseName,
+                                    date: new Date().toLocaleDateString(
+                                      'es-AR',
+                                    ),
+                                  })
+                                }
+                                className="px-2 py-0.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded text-[9px]"
+                              >
+                                Imprimir Rótulo
+                              </button>
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
                   ))}
@@ -3555,7 +3614,7 @@ export default function InventoryPage() {
                   <div className="flex justify-between items-center text-xs pt-3 border-t border-slate-800">
                     <span className="text-slate-400">
                       Mostrando {paginatedConsolidatedStock.length} de{' '}
-                      {filteredConsolidatedStock.length} SKUs
+                      {filteredConsolidatedStock.length} SKUs en stock
                     </span>
                     <div className="flex gap-1">
                       <button
@@ -3586,61 +3645,46 @@ export default function InventoryPage() {
               </section>
             )}
 
-            {/* TAB: MANTENIMIENTO */}
+            {/* TAB: MANTENIMIENTO UBICACIONES */}
             {activeTab === 'CONFIG' && (
               <section className="space-y-6">
-                <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
-                  <h2 className="text-base font-bold text-amber-400 border-b border-slate-800 pb-2 mb-4">
-                    Alta Nuevo Depósito
+                <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
+                  <h2 className="text-base font-bold text-amber-400 border-b border-slate-800 pb-2">
+                    Crear Depósito o Almacén
                   </h2>
                   <div className="flex gap-3">
-                    <div className="flex-1">
-                      <label htmlFor="new-wh-name-input" className="sr-only">
-                        Nombre del Depósito
-                      </label>
-                      <input
-                        id="new-wh-name-input"
-                        type="text"
-                        value={newWhName}
-                        onChange={(e) => setNewWhName(e.target.value)}
-                        placeholder="Nombre del Depósito..."
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white"
-                      />
-                    </div>
+                    <input
+                      type="text"
+                      placeholder="Nombre del Depósito (Ej. Depósito Central)"
+                      value={newWhName}
+                      onChange={(e) => setNewWhName(e.target.value)}
+                      className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white flex-1 font-bold"
+                    />
                     <button
                       type="button"
                       onClick={handleCreateWarehouse}
                       disabled={submitting}
-                      className="px-5 py-3 bg-amber-500 text-slate-950 font-black rounded-xl text-xs disabled:opacity-50"
+                      className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-xl text-xs disabled:opacity-50"
                     >
-                      + CREAR DEPÓSITO
+                      + Crear Depósito
                     </button>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  {/* GENERADOR POR RANGOS */}
-                  <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
-                    <h2 className="text-base font-bold text-amber-400 border-b border-slate-800 pb-2">
-                      Generador Inteligente por Rangos
-                    </h2>
+                <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
+                  <h2 className="text-base font-bold text-amber-400 border-b border-slate-800 pb-2">
+                    Generación Masiva de Ubicaciones por Lote
+                  </h2>
 
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                     <div>
-                      <label
-                        htmlFor="gen-target-wh-select"
-                        className="block text-xs text-slate-300 mb-1"
-                      >
-                        Depósito Destino *
+                      <label className="block text-slate-400 mb-1">
+                        Depósito Destino
                       </label>
                       <select
-                        id="gen-target-wh-select"
                         value={targetConfigWhId}
-                        onChange={(e) => {
-                          const id = e.target.value;
-                          setTargetConfigWhId(id);
-                          loadLocationsForWarehouse(id);
-                        }}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-amber-400 font-bold"
+                        onChange={(e) => setTargetConfigWhId(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-white font-bold"
                       >
                         {simpleWarehousesList.map((w) => (
                           <option key={w.id} value={w.id}>
@@ -3650,598 +3694,427 @@ export default function InventoryPage() {
                       </select>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label
-                          htmlFor="gen-category-select"
-                          className="block text-xs text-slate-300 mb-1"
-                        >
-                          Categoría
-                        </label>
-                        <select
-                          id="gen-category-select"
-                          value={genCategory}
-                          onChange={(e) =>
-                            setGenCategory(
-                              e.target.value as LocationTypeCategory,
-                            )
-                          }
-                          className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white"
-                        >
-                          <option value="RACK">RACK</option>
-                          <option value="PASILLO">PASILLO</option>
-                          <option value="TECHO">TECHO</option>
-                        </select>
-                      </div>
-
-                      <div>
-                        <label
-                          htmlFor="gen-area-input"
-                          className="block text-xs text-slate-300 mb-1"
-                        >
-                          Área / Nombre
-                        </label>
-                        <input
-                          id="gen-area-input"
-                          type="text"
-                          value={genAreaName}
-                          onChange={(e) => setGenAreaName(e.target.value)}
-                          className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-3 gap-3">
-                      <div>
-                        <label
-                          htmlFor="gen-levels-input"
-                          className="block text-xs text-slate-300 mb-1"
-                        >
-                          Niveles (Letras)
-                        </label>
-                        <input
-                          id="gen-levels-input"
-                          type="text"
-                          value={genLevelsInput}
-                          onChange={(e) => setGenLevelsInput(e.target.value)}
-                          placeholder="A, B, C"
-                          className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white text-center font-bold"
-                        />
-                      </div>
-
-                      <div>
-                        <label
-                          htmlFor="gen-start-input"
-                          className="block text-xs text-slate-300 mb-1"
-                        >
-                          Posición Inicio
-                        </label>
-                        <input
-                          id="gen-start-input"
-                          type="number"
-                          value={genPosStart}
-                          onChange={(e) =>
-                            setGenPosStart(Number(e.target.value))
-                          }
-                          className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white text-center font-bold"
-                        />
-                      </div>
-
-                      <div>
-                        <label
-                          htmlFor="gen-end-input"
-                          className="block text-xs text-slate-300 mb-1"
-                        >
-                          Posición Fin
-                        </label>
-                        <input
-                          id="gen-end-input"
-                          type="number"
-                          value={genPosEnd}
-                          onChange={(e) => setGenPosEnd(Number(e.target.value))}
-                          className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white text-center font-bold"
-                        />
-                      </div>
+                    <div>
+                      <label className="block text-slate-400 mb-1">
+                        Categoría Ubicación
+                      </label>
+                      <select
+                        value={genCategory}
+                        onChange={(e) =>
+                          setGenCategory(e.target.value as LocationTypeCategory)
+                        }
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-white font-bold"
+                      >
+                        <option value="RACK">RACK</option>
+                        <option value="PISO">PISO</option>
+                        <option value="SHOWROOM">SHOWROOM</option>
+                      </select>
                     </div>
 
                     <div>
-                      <label
-                        htmlFor="gen-capacity-input"
-                        className="block text-xs text-slate-300 mb-1"
-                      >
-                        Capacidad Máxima por Posición (m³)
+                      <label className="block text-slate-400 mb-1">
+                        Nombre Área / Rack
                       </label>
                       <input
-                        id="gen-capacity-input"
+                        type="text"
+                        value={genAreaName}
+                        onChange={(e) => setGenAreaName(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-slate-400 mb-1">
+                        Niveles (separados por coma)
+                      </label>
+                      <input
+                        type="text"
+                        value={genLevelsInput}
+                        onChange={(e) => setGenLevelsInput(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-white font-mono"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-slate-400 mb-1">
+                        Módulo Inicio
+                      </label>
+                      <input
+                        type="number"
+                        value={genPosStart}
+                        onChange={(e) => setGenPosStart(Number(e.target.value))}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-white font-mono"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-slate-400 mb-1">
+                        Módulo Fin
+                      </label>
+                      <input
+                        type="number"
+                        value={genPosEnd}
+                        onChange={(e) => setGenPosEnd(Number(e.target.value))}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-white font-mono"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-slate-400 mb-1">
+                        Capacidad Max m³ x Posición
+                      </label>
+                      <input
                         type="number"
                         step="0.1"
                         value={genCapacityM3}
                         onChange={(e) =>
                           setGenCapacityM3(Number(e.target.value))
                         }
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-amber-400 font-bold"
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-amber-400 font-mono font-bold"
                       />
                     </div>
-
-                    <button
-                      type="button"
-                      onClick={handleGenerateBatch}
-                      disabled={submitting}
-                      className="w-full py-3 bg-amber-500 text-slate-950 font-black rounded-xl text-xs hover:bg-amber-400 transition-colors disabled:opacity-50"
-                    >
-                      GENERAR POSICIONES EN LOTE
-                    </button>
                   </div>
 
-                  {/* TABLA DE UBICACIONES Y EDICIÓN MASIVA */}
-                  <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
-                    <div className="flex justify-between items-center border-b border-slate-800 pb-2">
-                      <h2 className="text-base font-bold text-amber-400">
-                        Ubicaciones Existentes ({locations.length})
-                      </h2>
+                  <button
+                    type="button"
+                    onClick={handleGenerateBatch}
+                    disabled={submitting}
+                    className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-xl text-xs disabled:opacity-50"
+                  >
+                    Generar Posiciones en Lote
+                  </button>
+                </div>
+
+                <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
+                  <div className="flex flex-wrap justify-between items-center gap-3 border-b border-slate-800 pb-3">
+                    <h2 className="text-base font-bold text-amber-400">
+                      Mantenimiento y Edición de Posiciones
+                    </h2>
+
+                    <div className="flex gap-2">
+                      <select
+                        value={selectedAreaFilter}
+                        onChange={(e) => {
+                          setSelectedAreaFilter(e.target.value);
+                          setConfigPage(1);
+                        }}
+                        className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white font-bold"
+                      >
+                        <option value="ALL">Todas las Áreas</option>
+                        {availableAreasInWarehouse.map((area) => (
+                          <option key={area} value={area}>
+                            {area}
+                          </option>
+                        ))}
+                      </select>
+
+                      <button
+                        type="button"
+                        onClick={handleSaveCapacityChanges}
+                        disabled={
+                          Object.keys(editedCapacities).length === 0 ||
+                          submitting
+                        }
+                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs disabled:opacity-50"
+                      >
+                        Guardar Capacidades (
+                        {Object.keys(editedCapacities).length})
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleDeleteSelectedLocations}
+                        disabled={
+                          selectedLocIdsForDelete.length === 0 || submitting
+                        }
+                        className="px-3 py-1.5 bg-red-950 border border-red-800 text-red-300 font-bold rounded-xl text-xs disabled:opacity-50"
+                      >
+                        Eliminar Posiciones ({selectedLocIdsForDelete.length})
+                      </button>
+
                       <button
                         type="button"
                         onClick={handleDeleteFullWarehouse}
-                        className="px-2.5 py-1 bg-red-950 text-red-400 border border-red-800 hover:bg-red-900 rounded font-bold text-[10px]"
+                        disabled={submitting}
+                        className="px-3 py-1.5 bg-red-900 hover:bg-red-800 text-white font-bold rounded-xl text-xs disabled:opacity-50"
                       >
                         Eliminar Depósito
                       </button>
                     </div>
+                  </div>
 
-                    <div className="flex flex-wrap justify-between items-center gap-2">
-                      <div className="flex items-center gap-2">
-                        <select
-                          value={selectedAreaFilter}
-                          onChange={(e) => {
-                            setSelectedAreaFilter(e.target.value);
-                            setConfigPage(1);
-                          }}
-                          className="bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white font-bold"
-                        >
-                          <option value="ALL">Todas las Áreas</option>
-                          {availableAreasInWarehouse.map((area) => (
-                            <option key={area} value={area}>
-                              {area}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div className="flex gap-2">
-                        {Object.keys(editedCapacities).length > 0 && (
-                          <button
-                            type="button"
-                            onClick={handleSaveCapacityChanges}
-                            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded text-xs"
-                          >
-                            Guardar Cambios Capacidad
-                          </button>
-                        )}
-
-                        {selectedLocIdsForDelete.length > 0 && (
-                          <button
-                            type="button"
-                            onClick={handleDeleteSelectedLocations}
-                            className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white font-bold rounded text-xs"
-                          >
-                            Eliminar ({selectedLocIdsForDelete.length})
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="overflow-x-auto max-h-[350px] border border-slate-800 rounded-xl">
-                      <table className="w-full text-xs text-left text-slate-300">
-                        <thead className="bg-slate-950 text-slate-400 uppercase font-bold sticky top-0 border-b border-slate-800">
-                          <tr>
-                            <th className="p-2.5 w-10 text-center">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs text-left text-slate-300">
+                      <thead className="bg-slate-950 text-slate-400 uppercase font-bold border-b border-slate-800">
+                        <tr>
+                          <th className="p-3">
+                            <input
+                              type="checkbox"
+                              onChange={handleToggleSelectAllLocations}
+                              checked={
+                                visibleLocationsInMaintenance.length > 0 &&
+                                visibleLocationsInMaintenance.every((l) =>
+                                  selectedLocIdsForDelete.includes(l.id),
+                                )
+                              }
+                              className="w-4 h-4 accent-amber-500 rounded"
+                            />
+                          </th>
+                          <th className="p-3">Código Posición</th>
+                          <th className="p-3">Área / Zona</th>
+                          <th className="p-3">Nivel</th>
+                          <th className="p-3">Categoría</th>
+                          <th className="p-3">Capacidad Max (m³)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800">
+                        {paginatedLocations.map((loc) => (
+                          <tr key={loc.id} className="hover:bg-slate-950/50">
+                            <td className="p-3">
                               <input
                                 type="checkbox"
-                                checked={
-                                  visibleLocationsInMaintenance.length > 0 &&
-                                  visibleLocationsInMaintenance.every((l) =>
-                                    selectedLocIdsForDelete.includes(l.id),
-                                  )
-                                }
-                                onChange={handleToggleSelectAllLocations}
-                                className="w-4 h-4 accent-amber-500 rounded cursor-pointer"
+                                checked={selectedLocIdsForDelete.includes(
+                                  loc.id,
+                                )}
+                                onChange={(e) => {
+                                  const checked = e.target.checked;
+                                  setSelectedLocIdsForDelete((prev) =>
+                                    checked
+                                      ? [...prev, loc.id]
+                                      : prev.filter((id) => id !== loc.id),
+                                  );
+                                }}
+                                className="w-4 h-4 accent-amber-500 rounded"
                               />
-                            </th>
-                            <th className="p-2.5">Código Posición</th>
-                            <th className="p-2.5">Área / Zona</th>
-                            <th className="p-2.5">Nivel</th>
-                            <th className="p-2.5 text-center">
-                              Capacidad (m³)
-                            </th>
+                            </td>
+                            <td className="p-3 font-mono font-bold text-amber-400">
+                              {loc.code}
+                            </td>
+                            <td className="p-3">{loc.zoneName}</td>
+                            <td className="p-3 font-bold">{loc.rackLevel}</td>
+                            <td className="p-3">{loc.category}</td>
+                            <td className="p-3">
+                              <input
+                                type="number"
+                                step="0.1"
+                                value={
+                                  editedCapacities[loc.id] !== undefined
+                                    ? editedCapacities[loc.id]
+                                    : loc.maxCapacityM3
+                                }
+                                onChange={(e) =>
+                                  setEditedCapacities((prev) => ({
+                                    ...prev,
+                                    [loc.id]: Number(e.target.value),
+                                  }))
+                                }
+                                className="w-24 bg-slate-950 border border-slate-800 p-1 rounded text-amber-300 font-mono font-bold text-center"
+                              />
+                            </td>
                           </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-800">
-                          {paginatedLocations.map((loc) => (
-                            <tr key={loc.id} className="hover:bg-slate-950/50">
-                              <td className="p-2.5 text-center">
-                                <input
-                                  type="checkbox"
-                                  checked={selectedLocIdsForDelete.includes(
-                                    loc.id,
-                                  )}
-                                  onChange={(e) => {
-                                    if (e.target.checked) {
-                                      setSelectedLocIdsForDelete((prev) => [
-                                        ...prev,
-                                        loc.id,
-                                      ]);
-                                    } else {
-                                      setSelectedLocIdsForDelete((prev) =>
-                                        prev.filter((id) => id !== loc.id),
-                                      );
-                                    }
-                                  }}
-                                  className="w-4 h-4 accent-amber-500 rounded cursor-pointer"
-                                />
-                              </td>
-                              <td className="p-2.5 font-mono font-bold text-amber-400">
-                                {loc.code}
-                              </td>
-                              <td className="p-2.5">{loc.zoneName}</td>
-                              <td className="p-2.5 font-bold text-center">
-                                {loc.rackLevel}
-                              </td>
-                              <td className="p-2.5 text-center">
-                                <input
-                                  type="number"
-                                  step="0.1"
-                                  value={
-                                    editedCapacities[loc.id] !== undefined
-                                      ? editedCapacities[loc.id]
-                                      : loc.maxCapacityM3
-                                  }
-                                  onChange={(e) =>
-                                    setEditedCapacities((prev) => ({
-                                      ...prev,
-                                      [loc.id]: Number(e.target.value),
-                                    }))
-                                  }
-                                  className="w-20 bg-slate-950 border border-slate-800 p-1 text-center font-bold text-amber-300 rounded"
-                                />
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-
-                    {visibleLocationsInMaintenance.length > ITEMS_PER_PAGE && (
-                      <div className="flex justify-between items-center text-xs pt-2">
-                        <span className="text-slate-400">
-                          Mostrando {paginatedLocations.length} de{' '}
-                          {visibleLocationsInMaintenance.length} ubicaciones
-                        </span>
-                        <div className="flex gap-1">
-                          <button
-                            type="button"
-                            disabled={configPage === 1}
-                            onClick={() => setConfigPage((p) => p - 1)}
-                            className="px-2.5 py-1 bg-slate-800 disabled:opacity-50 text-white rounded font-bold"
-                          >
-                            Anterior
-                          </button>
-                          <span className="px-2.5 py-1 bg-slate-950 text-amber-400 font-mono font-bold rounded">
-                            Pág. {configPage}
-                          </span>
-                          <button
-                            type="button"
-                            disabled={
-                              configPage * ITEMS_PER_PAGE >=
-                              visibleLocationsInMaintenance.length
-                            }
-                            onClick={() => setConfigPage((p) => p + 1)}
-                            className="px-2.5 py-1 bg-slate-800 disabled:opacity-50 text-white rounded font-bold"
-                          >
-                            Siguiente
-                          </button>
-                        </div>
-                      </div>
-                    )}
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
+
+                  {visibleLocationsInMaintenance.length > ITEMS_PER_PAGE && (
+                    <div className="flex justify-between items-center text-xs pt-3 border-t border-slate-800">
+                      <span className="text-slate-400">
+                        Mostrando {paginatedLocations.length} de{' '}
+                        {visibleLocationsInMaintenance.length} ubicaciones
+                      </span>
+                      <div className="flex gap-1">
+                        <button
+                          type="button"
+                          disabled={configPage === 1}
+                          onClick={() => setConfigPage((p) => p - 1)}
+                          className="px-3 py-1 bg-slate-800 disabled:opacity-50 text-white rounded font-bold"
+                        >
+                          Anterior
+                        </button>
+                        <span className="px-3 py-1 bg-slate-950 text-amber-400 font-mono font-bold rounded">
+                          Pág. {configPage}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={
+                            configPage * ITEMS_PER_PAGE >=
+                            visibleLocationsInMaintenance.length
+                          }
+                          onClick={() => setConfigPage((p) => p + 1)}
+                          className="px-3 py-1 bg-slate-800 disabled:opacity-50 text-white rounded font-bold"
+                        >
+                          Siguiente
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </section>
             )}
           </>
         )}
 
-        {/* MODAL DETALLE DE CONTENEDOR */}
+        {/* MODAL: DETALLE DE CONTENEDOR (TAB HISTORIAL) */}
         {selectedContainerDetail && (
-          <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-            <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl max-w-4xl w-full space-y-4 shadow-2xl max-h-[90vh] flex flex-col">
-              <div className="flex justify-between items-start border-b border-slate-800 pb-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-lg font-black text-amber-400">
-                      Contenedor: {selectedContainerDetail.containerNumber}
-                    </h3>
-                    <span
-                      className={`px-2.5 py-0.5 rounded text-xs font-black ${
-                        selectedContainerDetail.status === 'RECIBIDO'
-                          ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
-                          : 'bg-amber-950 text-amber-400 border border-amber-800'
-                      }`}
-                    >
-                      {selectedContainerDetail.status}
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-400 mt-1">
-                    Depósito:{' '}
-                    <strong className="text-white">
-                      {selectedContainerDetail.warehouseName}
-                    </strong>{' '}
-                    | Total Bultos:{' '}
-                    <strong className="text-amber-400">
-                      {selectedContainerDetail.totalBultos}
-                    </strong>
-                  </p>
-                </div>
+          <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+            <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl max-w-3xl w-full max-h-[80vh] overflow-y-auto space-y-4">
+              <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                <h3 className="text-lg font-black text-amber-400">
+                  Detalle Contenedor: {selectedContainerDetail.containerNumber}
+                </h3>
                 <button
                   type="button"
                   onClick={() => setSelectedContainerDetail(null)}
-                  className="text-slate-400 hover:text-white font-bold text-lg p-1"
+                  className="text-slate-400 hover:text-white font-bold"
                 >
-                  ✕
+                  X Cerrar
                 </button>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-950 p-3 rounded-xl border border-slate-800 text-xs">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs bg-slate-950 p-3 rounded-xl border border-slate-800">
                 <div>
-                  <span className="text-slate-500 block">Fecha Pre-Carga</span>
+                  <span className="text-slate-400 block">Depósito:</span>
                   <strong className="text-white">
+                    {selectedContainerDetail.warehouseName}
+                  </strong>
+                </div>
+                <div>
+                  <span className="text-slate-400 block">Total Bultos:</span>
+                  <strong className="text-amber-400">
+                    {selectedContainerDetail.totalBultos}
+                  </strong>
+                </div>
+                <div>
+                  <span className="text-slate-400 block">Estado:</span>
+                  <strong className="text-emerald-400">
+                    {selectedContainerDetail.status}
+                  </strong>
+                </div>
+                <div>
+                  <span className="text-slate-400 block">Pre-carga:</span>
+                  <strong className="text-slate-300">
                     {new Date(
                       selectedContainerDetail.arrivalDate,
                     ).toLocaleDateString('es-AR')}
                   </strong>
                 </div>
-                <div>
-                  <span className="text-slate-500 block">
-                    Fecha Descarga / Ingreso
-                  </span>
-                  <strong className="text-white">
-                    {selectedContainerDetail.dischargeDate
-                      ? new Date(
-                          selectedContainerDetail.dischargeDate,
-                        ).toLocaleDateString('es-AR')
-                      : 'Pendiente'}
-                  </strong>
-                </div>
-                <div>
-                  <span className="text-slate-500 block">
-                    Total Unidades Almacenadas
-                  </span>
-                  <strong className="text-amber-400 font-bold">
-                    {(selectedContainerDetail.items || []).reduce(
-                      (acc, item) => {
-                        const uBox = item.unitsPerBox || 1;
-                        const totU =
-                          item.totalUnits || item.quantityBultos * uBox;
-                        return acc + totU;
-                      },
-                      0,
-                    )}{' '}
-                    Unidades
-                  </strong>
-                </div>
-                <div>
-                  <span className="text-slate-500 block">
-                    Total Ítems Auditados
-                  </span>
-                  <strong className="text-emerald-400 font-bold">
-                    {
-                      (selectedContainerDetail.items || []).filter(
-                        (i) =>
-                          i.isControlled ||
-                          i.isChecked ||
-                          selectedContainerDetail.status === 'RECIBIDO',
-                      ).length
-                    }{' '}
-                    de {selectedContainerDetail.items?.length || 0}
-                  </strong>
-                </div>
               </div>
 
-              <div className="flex-1 overflow-y-auto border border-slate-800 rounded-xl">
-                <table className="w-full text-xs text-left text-slate-300">
-                  <thead className="bg-slate-950 text-slate-400 uppercase font-bold sticky top-0 border-b border-slate-800">
-                    <tr>
-                      <th className="p-3">SKU</th>
-                      <th className="p-3">Descripción</th>
-                      <th className="p-3 text-center">Bultos</th>
-                      <th className="p-3 text-center">Unid. x Bulto</th>
-                      <th className="p-3 text-center">Unidades Totales</th>
-                      <th className="p-3 text-center">Estado Auditado</th>
-                      <th className="p-3">Auditado Por</th>
-                      <th className="p-3">Fecha / Hora Auditoría</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800">
-                    {selectedContainerDetail.items &&
-                    selectedContainerDetail.items.length > 0 ? (
-                      selectedContainerDetail.items.map((item) => {
-                        const unitsPerBox = item.unitsPerBox || 1;
-                        const totalUnits =
-                          item.totalUnits || item.quantityBultos * unitsPerBox;
-                        const isAudited =
-                          item.isControlled ||
-                          item.isChecked ||
-                          selectedContainerDetail.status === 'RECIBIDO';
-
-                        const auditorName =
-                          item.controlledBy ||
-                          item.auditedBy ||
-                          (selectedContainerDetail.status === 'RECIBIDO'
-                            ? 'Martín Cazorla'
-                            : null);
-
-                        const auditedAtDate =
-                          item.controlledAt ||
-                          item.updatedAt ||
-                          selectedContainerDetail.dischargeDate ||
-                          selectedContainerDetail.arrivalDate;
-
-                        return (
-                          <tr
-                            key={item.id || item.sku}
-                            className="hover:bg-slate-950/50"
-                          >
-                            <td className="p-3 font-mono font-bold text-amber-400">
-                              {item.sku}
-                            </td>
-                            <td className="p-3 font-medium text-white">
-                              {item.description}
-                            </td>
-                            <td className="p-3 text-center font-bold text-amber-300">
-                              {item.quantityBultos}
-                            </td>
-                            <td className="p-3 text-center font-bold text-slate-300">
-                              {unitsPerBox}
-                            </td>
-                            <td className="p-3 text-center font-bold text-emerald-400 font-mono">
-                              {totalUnits} un.
-                            </td>
-                            <td className="p-3 text-center">
-                              {isAudited ? (
-                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800">
-                                  ✓ Controlado
-                                </span>
-                              ) : (
-                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-950 text-amber-400 border border-amber-800">
-                                  Pendiente
-                                </span>
-                              )}
-                            </td>
-                            <td className="p-3">
-                              {auditorName ? (
-                                <span className="font-bold text-emerald-300 bg-emerald-950/60 border border-emerald-800/80 px-2 py-0.5 rounded text-[11px]">
-                                  👤 {auditorName}
-                                </span>
-                              ) : (
-                                <span className="text-slate-500 font-italic">
-                                  Sin auditar
-                                </span>
-                              )}
-                            </td>
-                            <td className="p-3 text-slate-400 font-mono text-[11px]">
-                              {isAudited && auditedAtDate
-                                ? new Date(auditedAtDate).toLocaleString(
-                                    'es-AR',
-                                  )
-                                : '-'}
-                            </td>
-                          </tr>
-                        );
-                      })
-                    ) : (
+              <div className="space-y-2">
+                <h4 className="text-xs font-bold text-slate-300 uppercase">
+                  Ítems Registrados
+                </h4>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs text-left text-slate-300">
+                    <thead className="bg-slate-950 text-slate-400 uppercase font-bold border-b border-slate-800">
                       <tr>
-                        <td
-                          colSpan={8}
-                          className="p-4 text-center text-slate-500"
-                        >
-                          No hay productos detallados registrados en este
-                          contenedor.
-                        </td>
+                        <th className="p-2">SKU</th>
+                        <th className="p-2">Descripción</th>
+                        <th className="p-2 text-center">Bultos</th>
+                        <th className="p-2 text-center">Auditado por</th>
                       </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="flex justify-end pt-2 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setSelectedContainerDetail(null)}
-                  className="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl text-xs"
-                >
-                  Cerrar
-                </button>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800">
+                      {selectedContainerDetail.items.map((it, iIdx) => (
+                        <tr key={iIdx}>
+                          <td className="p-2 font-mono font-bold text-amber-400">
+                            {it.sku}
+                          </td>
+                          <td className="p-2">{it.description}</td>
+                          <td className="p-2 text-center font-bold">
+                            {it.quantityBultos}
+                          </td>
+                          <td className="p-2 text-center text-slate-400">
+                            {it.controlledBy || it.auditedBy || 'Sistema'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
           </div>
         )}
 
-        {/* MODAL REUBICAR PALLET / MOVER STOCK */}
+        {/* MODAL: REUBICAR STOCK (INTER-DEPÓSITO E INTRA-DEPÓSITO) */}
         {relocateItem && (
-          <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-            <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl max-w-lg w-full space-y-4 shadow-2xl">
-              <div className="flex justify-between items-start border-b border-slate-800 pb-3">
-                <div>
-                  <h3 className="text-base font-bold text-amber-400">
-                    Reubicar Pallet / Mover Stock
-                  </h3>
-                  <p className="text-xs text-slate-400">
-                    SKU:{' '}
-                    <span className="text-white font-mono font-bold">
-                      {relocateItem.productSku}
-                    </span>{' '}
-                    - {relocateItem.productName}
-                  </p>
-                </div>
+          <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+            <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl max-w-lg w-full space-y-4">
+              <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                <h3 className="text-base font-bold text-amber-400">
+                  Reubicar Pallet / Bultos - SKU: {relocateItem.productSku}
+                </h3>
                 <button
                   type="button"
                   onClick={() => setRelocateItem(null)}
-                  className="text-slate-400 hover:text-white font-bold text-sm"
+                  className="text-slate-400 hover:text-white font-bold"
                 >
-                  ✕
+                  X
                 </button>
               </div>
 
               <div className="space-y-3 text-xs">
                 <div>
-                  <label
-                    htmlFor="relocate-source-select"
-                    className="block text-slate-300 mb-1 font-bold"
-                  >
-                    Ubicación de Origen *
+                  <label className="block text-slate-400 mb-1">
+                    1. Seleccione Posición de Origen *
                   </label>
                   <select
-                    id="relocate-source-select"
                     value={selectedSourceInventoryId}
                     onChange={(e) => {
-                      const id = e.target.value;
-                      setSelectedSourceInventoryId(id);
-                      const source = relocateItem.availableSources.find(
-                        (s) => s.inventoryId === id,
+                      const invId = e.target.value;
+                      setSelectedSourceInventoryId(invId);
+                      const selectedSource = relocateItem.availableSources.find(
+                        (s) => s.inventoryId === invId,
                       );
-                      if (source) {
-                        setRelocateQuantity(source.quantityBultos);
-                        setRelocateTargetWarehouseId(source.warehouseId);
-                        loadLocationsForWarehouse(source.warehouseId);
+                      if (selectedSource) {
+                        setRelocateTargetWarehouseId(
+                          selectedSource.warehouseId,
+                        );
+                        setRelocateTargetLocId('');
                       }
                     }}
-                    className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-white font-bold"
+                    className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold"
                   >
+                    <option value="">-- Seleccionar Posición Origen --</option>
                     {relocateItem.availableSources.map((s) => (
                       <option key={s.inventoryId} value={s.inventoryId}>
-                        {s.locationCode} ({s.warehouseName}) - Disponibles:{' '}
-                        {s.quantityBultos} bultos
+                        {s.locationCode} ({s.warehouseName}) -{' '}
+                        {s.quantityBultos} Bultos
                       </option>
                     ))}
                   </select>
                 </div>
 
                 <div>
-                  <label
-                    htmlFor="relocate-target-wh-select"
-                    className="block text-slate-300 mb-1 font-bold"
-                  >
-                    Depósito Destino *
+                  <label className="block text-slate-400 mb-1">
+                    2. Cantidad a Mover (Bultos) *
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={relocateQuantity}
+                    onChange={(e) =>
+                      setRelocateQuantity(Number(e.target.value))
+                    }
+                    className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-amber-400 font-bold"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-slate-400 mb-1">
+                    3. Seleccione Depósito Destino *
                   </label>
                   <select
-                    id="relocate-target-wh-select"
                     value={relocateTargetWarehouseId}
                     onChange={(e) => {
-                      const id = e.target.value;
-                      setRelocateTargetWarehouseId(id);
+                      setRelocateTargetWarehouseId(e.target.value);
                       setRelocateTargetLocId('');
-                      loadLocationsForWarehouse(id);
                     }}
-                    className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-amber-400 font-bold"
+                    className="w-full bg-slate-950 border border-amber-500/50 p-2 rounded text-amber-300 font-bold"
                   >
+                    <option value="">-- Seleccionar Depósito Destino --</option>
                     {simpleWarehousesList.map((wh) => (
                       <option key={wh.id} value={wh.id}>
                         {wh.name}
@@ -4251,25 +4124,20 @@ export default function InventoryPage() {
                 </div>
 
                 <div>
-                  <label
-                    htmlFor="relocate-search-loc-input"
-                    className="block text-slate-300 mb-1 font-bold"
-                  >
-                    Ubicación Destino *
+                  <label className="block text-slate-400 mb-1">
+                    4. Filtrar y Seleccionar Posición Destino *
                   </label>
                   <input
-                    id="relocate-search-loc-input"
                     type="text"
-                    placeholder="🔍 Buscar por código de posición (Ej. C1, C2)..."
+                    placeholder="Buscar ubicación destino..."
                     value={relocateSearchLocQuery}
                     onChange={(e) => setRelocateSearchLocQuery(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 p-2 rounded-xl text-white mb-2"
+                    className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white mb-1"
                   />
                   <select
-                    id="relocate-target-loc-select"
                     value={relocateTargetLocId}
                     onChange={(e) => setRelocateTargetLocId(e.target.value)}
-                    className="w-full bg-slate-950 border border-amber-500/50 p-2.5 rounded-xl text-white font-bold"
+                    className="w-full bg-slate-950 border border-amber-500/50 p-2 rounded text-white font-bold"
                   >
                     <option value="">-- Seleccionar Posición Destino --</option>
                     {filteredRelocateLocations.map((loc) => (
@@ -4279,37 +4147,13 @@ export default function InventoryPage() {
                     ))}
                   </select>
                 </div>
-
-                <div>
-                  <label
-                    htmlFor="relocate-qty-input"
-                    className="block text-slate-300 mb-1 font-bold"
-                  >
-                    Cantidad de Bultos a Mover *
-                  </label>
-                  <input
-                    id="relocate-qty-input"
-                    type="number"
-                    min={1}
-                    max={
-                      relocateItem.availableSources.find(
-                        (s) => s.inventoryId === selectedSourceInventoryId,
-                      )?.quantityBultos || 1
-                    }
-                    value={relocateQuantity}
-                    onChange={(e) =>
-                      setRelocateQuantity(Number(e.target.value))
-                    }
-                    className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-amber-300 font-bold text-center"
-                  />
-                </div>
               </div>
 
               <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
                 <button
                   type="button"
                   onClick={() => setRelocateItem(null)}
-                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-xl text-xs"
+                  className="px-4 py-2 bg-slate-800 text-slate-300 rounded-xl font-bold text-xs"
                 >
                   Cancelar
                 </button>
@@ -4317,116 +4161,75 @@ export default function InventoryPage() {
                   type="button"
                   onClick={handleConfirmRelocation}
                   disabled={submitting}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-black rounded-xl text-xs shadow-lg disabled:opacity-50"
+                  className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-xl font-black text-xs disabled:opacity-50"
                 >
-                  CONFIRMAR REUBICACIÓN
+                  Confirmar Transferencia
                 </button>
               </div>
             </div>
           </div>
         )}
 
-        {/* MODAL DESCONTAR STOCK (EXCLUSIVO ADMINISTRADOR) */}
+        {/* MODAL: DESCONTAR STOCK (ADMIN EXCLUSIVO) */}
         {deductStockItem && (
-          <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-            <div className="bg-slate-900 border border-rose-900/80 p-6 rounded-2xl max-w-lg w-full space-y-4 shadow-2xl">
-              <div className="flex justify-between items-start border-b border-slate-800 pb-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-base font-bold text-rose-400">
-                      Descontar Stock (Ajuste / Egreso Manual)
-                    </h3>
-                    <span className="px-2 py-0.5 text-[10px] font-black bg-rose-950 text-rose-300 border border-rose-800 rounded">
-                      SOLO ADMIN
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-400 mt-1">
-                    SKU:{' '}
-                    <span className="text-white font-mono font-bold">
-                      {deductStockItem.productSku}
-                    </span>{' '}
-                    - {deductStockItem.productName}
-                  </p>
-                </div>
+          <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+            <div className="bg-slate-900 border border-red-900/80 p-6 rounded-2xl max-w-lg w-full space-y-4">
+              <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                <h3 className="text-base font-bold text-red-400">
+                  Descontar Stock Manual (Admin) - SKU:{' '}
+                  {deductStockItem.productSku}
+                </h3>
                 <button
                   type="button"
                   onClick={() => setDeductStockItem(null)}
-                  className="text-slate-400 hover:text-white font-bold text-sm"
+                  className="text-slate-400 hover:text-white font-bold"
                 >
-                  ✕
+                  X
                 </button>
               </div>
 
               <div className="space-y-3 text-xs">
                 <div>
-                  <label
-                    htmlFor="deduct-source-select"
-                    className="block text-slate-300 mb-1 font-bold"
-                  >
-                    Posición de Origen *
+                  <label className="block text-slate-400 mb-1">
+                    Origen de Egreso *
                   </label>
                   <select
-                    id="deduct-source-select"
                     value={deductSourceInventoryId}
-                    onChange={(e) => {
-                      const id = e.target.value;
-                      setDeductSourceInventoryId(id);
-                      const source = deductStockItem.availableSources.find(
-                        (s) => s.inventoryId === id,
-                      );
-                      if (source) {
-                        setDeductQuantity(1);
-                      }
-                    }}
-                    className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-white font-bold"
+                    onChange={(e) => setDeductSourceInventoryId(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white font-bold"
                   >
                     {deductStockItem.availableSources.map((s) => (
                       <option key={s.inventoryId} value={s.inventoryId}>
-                        {s.locationCode} ({s.warehouseName}) - Disponibles:{' '}
-                        {s.quantityBultos} bultos
+                        {s.locationCode} ({s.quantityBultos} Bultos disponibles)
                       </option>
                     ))}
                   </select>
                 </div>
 
                 <div>
-                  <label
-                    htmlFor="deduct-qty-input"
-                    className="block text-slate-300 mb-1 font-bold"
-                  >
-                    Cantidad de Bultos a Descontar *
+                  <label className="block text-slate-400 mb-1">
+                    Cantidad a Descontar (Bultos) *
                   </label>
                   <input
-                    id="deduct-qty-input"
                     type="number"
                     min={1}
-                    max={
-                      deductStockItem.availableSources.find(
-                        (s) => s.inventoryId === deductSourceInventoryId,
-                      )?.quantityBultos || 1
-                    }
                     value={deductQuantity}
                     onChange={(e) => setDeductQuantity(Number(e.target.value))}
-                    className="w-full bg-slate-950 border border-rose-900/60 p-2.5 rounded-xl text-rose-300 font-bold text-center text-sm"
+                    className="w-full bg-slate-950 border border-red-500/50 p-2 rounded text-red-400 font-bold"
                   />
                 </div>
 
                 <div>
-                  <label
-                    htmlFor="deduct-reason-input"
-                    className="block text-slate-300 mb-1 font-bold"
-                  >
-                    Motivo / Justificación del Descuento *
+                  <label className="block text-slate-400 mb-1">
+                    Motivo / Justificación *
                   </label>
-
                   <textarea
-                    id="deduct-reason-input"
-                    rows={3}
-                    placeholder="Ej. Ajuste por rotura durante traslado, entrega directa manual cliente, merma..."
+                    rows={2}
+                    placeholder="Ej. Rotura en depósito, Venta directa de muestra..."
                     value={deductReason}
                     onChange={(e) => setDeductReason(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-white font-medium focus:border-rose-500"
-                  ></textarea>
+                    className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-white"
+                  />
                 </div>
               </div>
 
@@ -4434,7 +4237,7 @@ export default function InventoryPage() {
                 <button
                   type="button"
                   onClick={() => setDeductStockItem(null)}
-                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-xl text-xs"
+                  className="px-4 py-2 bg-slate-800 text-slate-300 rounded-xl font-bold text-xs"
                 >
                   Cancelar
                 </button>
@@ -4442,102 +4245,115 @@ export default function InventoryPage() {
                   type="button"
                   onClick={handleConfirmDeduction}
                   disabled={submitting}
-                  className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white font-black rounded-xl text-xs shadow-lg disabled:opacity-50"
+                  className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-xl font-black text-xs disabled:opacity-50"
                 >
-                  CONFIRMAR DESCUENTO
+                  Aplicar Descuento
                 </button>
               </div>
             </div>
           </div>
         )}
 
-        {/* MODAL HISTORIAL DE DESCUENTOS Y AJUSTES MANUALES */}
+        {/* MODAL: HISTORIAL DE AUDITORÍA Y DESCUENTOS DE STOCK */}
         {showDeductionHistoryModal && (
-          <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-            <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl max-w-3xl w-full space-y-4 shadow-2xl max-h-[85vh] flex flex-col">
+          <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+            <div className="bg-slate-900 border border-purple-800 p-6 rounded-2xl max-w-3xl w-full max-h-[85vh] overflow-y-auto space-y-4">
               <div className="flex justify-between items-center border-b border-slate-800 pb-3">
-                <div>
-                  <h3 className="text-base font-bold text-purple-300">
-                    Historial de Descuentos y Ajustes Manuales (Admin)
-                  </h3>
-                  <p className="text-xs text-slate-400">
-                    Registro auditable de egresos directos de stock realizados
-                    fuera del módulo picking
-                  </p>
-                </div>
+                <h3 className="text-base font-bold text-purple-300">
+                  Historial de Descuentos Manuales de Stock
+                </h3>
                 <button
                   type="button"
                   onClick={() => setShowDeductionHistoryModal(false)}
-                  className="text-slate-400 hover:text-white font-bold text-sm"
+                  className="text-slate-400 hover:text-white font-bold"
                 >
-                  ✕
+                  X Cerrar
                 </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto border border-slate-800 rounded-xl">
+              <div className="flex justify-between items-center gap-2">
+                <input
+                  type="text"
+                  placeholder="Buscar por SKU, motivo, ubicación o usuario..."
+                  value={deductionSearchQuery}
+                  onChange={(e) => {
+                    setDeductionSearchQuery(e.target.value);
+                    setDeductionHistoryPage(1);
+                  }}
+                  className="w-full bg-slate-950 border border-slate-800 p-2 rounded text-xs text-white"
+                />
+              </div>
+
+              <div className="overflow-x-auto">
                 <table className="w-full text-xs text-left text-slate-300">
-                  <thead className="bg-slate-950 text-slate-400 uppercase font-bold sticky top-0 border-b border-slate-800">
+                  <thead className="bg-slate-950 text-slate-400 uppercase font-bold border-b border-slate-800">
                     <tr>
-                      <th className="p-3">SKU</th>
-                      <th className="p-3">Posición</th>
-                      <th className="p-3 text-center">Bultos Descontados</th>
-                      <th className="p-3">Motivo / Justificación</th>
-                      <th className="p-3">Administrador</th>
-                      <th className="p-3">Fecha y Hora</th>
+                      <th className="p-2">Fecha</th>
+                      <th className="p-2">SKU</th>
+                      <th className="p-2">Ubicación</th>
+                      <th className="p-2 text-center">Bultos</th>
+                      <th className="p-2">Motivo</th>
+                      <th className="p-2">Usuario</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800">
-                    {deductionHistory.length > 0 ? (
-                      deductionHistory.map((item) => (
-                        <tr key={item.id} className="hover:bg-slate-950/50">
-                          <td className="p-3 font-mono font-bold text-amber-400">
-                            {item.productSku}
-                          </td>
-                          <td className="p-3 font-mono text-white">
-                            {item.locationCode}
-                          </td>
-                          <td className="p-3 text-center font-bold text-rose-400 font-mono">
-                            -{item.quantityBultos} b.
-                          </td>
-                          <td className="p-3 text-slate-200">{item.reason}</td>
-                          <td className="p-3">
-                            <span className="font-bold text-purple-300 bg-purple-950/60 border border-purple-800/80 px-2 py-0.5 rounded text-[10px]">
-                              👤 {item.performedBy}
-                            </span>
-                          </td>
-                          <td className="p-3 text-slate-400 font-mono text-[11px]">
-                            {item.timestamp}
-                          </td>
-                        </tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td
-                          colSpan={6}
-                          className="p-4 text-center text-slate-500"
-                        >
-                          No hay egresos o descuentos manuales registrados aún.
+                    {paginatedDeductionHistory.map((h) => (
+                      <tr key={h.id}>
+                        <td className="p-2 text-slate-400">{h.timestamp}</td>
+                        <td className="p-2 font-mono font-bold text-amber-400">
+                          {h.productSku}
+                        </td>
+                        <td className="p-2 font-mono">{h.locationCode}</td>
+                        <td className="p-2 text-center font-bold text-red-400">
+                          -{h.quantityBultos}
+                        </td>
+                        <td className="p-2">{h.reason}</td>
+                        <td className="p-2 font-bold text-purple-300">
+                          {h.performedBy}
                         </td>
                       </tr>
-                    )}
+                    ))}
                   </tbody>
                 </table>
               </div>
 
-              <div className="flex justify-end pt-2 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setShowDeductionHistoryModal(false)}
-                  className="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl text-xs"
-                >
-                  Cerrar
-                </button>
-              </div>
+              {filteredDeductionHistory.length > ITEMS_PER_PAGE && (
+                <div className="flex justify-between items-center text-xs pt-3 border-t border-slate-800">
+                  <span className="text-slate-400">
+                    Mostrando {paginatedDeductionHistory.length} de{' '}
+                    {filteredDeductionHistory.length} registros
+                  </span>
+                  <div className="flex gap-1">
+                    <button
+                      type="button"
+                      disabled={deductionHistoryPage === 1}
+                      onClick={() => setDeductionHistoryPage((p) => p - 1)}
+                      className="px-3 py-1 bg-slate-800 disabled:opacity-50 text-white rounded font-bold"
+                    >
+                      Anterior
+                    </button>
+                    <span className="px-3 py-1 bg-slate-950 text-amber-400 font-mono font-bold rounded">
+                      Pág. {deductionHistoryPage}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={
+                        deductionHistoryPage * ITEMS_PER_PAGE >=
+                        filteredDeductionHistory.length
+                      }
+                      onClick={() => setDeductionHistoryPage((p) => p + 1)}
+                      className="px-3 py-1 bg-slate-800 disabled:opacity-50 text-white rounded font-bold"
+                    >
+                      Siguiente
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
 
-        {/* MODAL IMPRESIÓN DE RÓTULOS A4 */}
+        {/* MODAL: IMPRESIÓN RÓTULO PALLET A4 */}
         {printModalData && (
           <PalletLabelModal
             data={printModalData}
