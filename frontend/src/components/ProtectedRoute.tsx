@@ -1,55 +1,55 @@
+// frontend/src/components/ProtectedRoute.tsx
+
 'use client';
 
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 import { UserRole } from '@/types/auth.types';
+import { homePathForRole } from '@/lib/roles';
+import { canAny, Permission } from '@/lib/permissions';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
+  /** Roles permitidos (compatibilidad). */
   allowedRoles?: UserRole[];
+  /** Al menos uno de estos permisos (preferido; espejo de la matriz del backend). */
+  requiredPermissions?: Permission[];
 }
 
 export default function ProtectedRoute({
   children,
   allowedRoles,
+  requiredPermissions,
 }: ProtectedRouteProps) {
   const { user, isLoading } = useAuth();
   const router = useRouter();
 
+  const rolesKey = allowedRoles?.join(',') ?? '';
+  const permsKey = requiredPermissions?.join(',') ?? '';
+
+  const isAllowed =
+    !!user &&
+    (!allowedRoles || allowedRoles.includes(user.role)) &&
+    (!requiredPermissions ||
+      requiredPermissions.length === 0 ||
+      canAny(user.role, requiredPermissions));
+
   useEffect(() => {
-    if (!isLoading) {
-      if (!user) {
-        router.push('/login');
-      } else if (allowedRoles && !allowedRoles.includes(user.role)) {
-        redirectByRole(user.role);
-      }
+    if (isLoading) return;
+    if (!user) {
+      router.replace('/login');
+    } else if (!isAllowed) {
+      router.replace(homePathForRole(user.role));
     }
-  }, [user, isLoading, router, allowedRoles]);
+  }, [user, isLoading, isAllowed, rolesKey, permsKey, router]);
 
-  const redirectByRole = (role: UserRole) => {
-    switch (role) {
-      case 'ADMIN':
-      case 'WAREHOUSE_MANAGER':
-        router.push('/dashboard');
-        break;
-      case 'PICKER':
-        router.push('/picking');
-        break;
-      case 'DRIVER':
-        router.push('/routes');
-        break;
-      default:
-        router.push('/login');
-    }
-  };
-
-  if (isLoading || !user) {
+  if (isLoading || !user || !isAllowed) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-900 text-white">
         <div className="flex items-center gap-3">
           <svg
-            className="animate-spin h-6 w-6 text-blue-500"
+            className="h-6 w-6 animate-spin text-blue-500"
             viewBox="0 0 24 24"
             fill="none"
           >

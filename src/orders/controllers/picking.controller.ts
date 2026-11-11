@@ -1,51 +1,78 @@
+// dsh-logistica/src/orders/controllers/picking.controller.ts
+
 import {
   Controller,
   Get,
   Post,
+  Put,
   Body,
   Param,
   ParseUUIDPipe,
-  UseGuards,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
-import { RolesGuard } from '../../auth/guards/roles.guard';
-import { Roles } from '../../auth/decorators/roles.decorator';
+import { RequirePermissions } from '../../auth/decorators/permissions.decorator';
+import { Permission } from '../../auth/permissions';
 import { GetUser } from '../../auth/decorators/get-user.decorator';
-import { UserRole } from '@prisma/client';
+import type { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { PickingService } from '../services/picking.service';
-import { ProcessPickingDto } from '../dto/picking-order.dto';
+import { AssignPickersDto, ConfirmPickTaskDto } from '../dto/picking-order.dto';
 
 @Controller('orders/picking')
-@UseGuards(AuthGuard('jwt'), RolesGuard)
+@RequirePermissions(Permission.PICKING_EXECUTE)
 export class PickingController {
   constructor(private readonly pickingService: PickingService) {}
 
   @Get('my-list')
-  @Roles(UserRole.PICKER, UserRole.WAREHOUSE_MANAGER, UserRole.ADMIN)
-  async getMyPendingPickings(@GetUser('id') pickerId: string) {
-    return this.pickingService.getMyPendingPickings(pickerId);
+  getMyPickings(@GetUser() user: AuthenticatedUser) {
+    return this.pickingService.getMyPickings(user);
+  }
+
+  @Get(':id')
+  getDetail(
+    @Param('id', new ParseUUIDPipe()) orderId: string,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    return this.pickingService.getDetail(orderId, user);
+  }
+
+  @Put(':id/pickers')
+  @RequirePermissions(Permission.PICKING_ASSIGN)
+  assignPickers(
+    @Param('id', new ParseUUIDPipe()) orderId: string,
+    @Body() dto: AssignPickersDto,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    return this.pickingService.assignPickers(orderId, dto, user);
   }
 
   @Post(':id/start')
-  @Roles(UserRole.WAREHOUSE_MANAGER, UserRole.ADMIN, UserRole.PICKER)
-  async startPicking(
+  @HttpCode(HttpStatus.OK)
+  start(
     @Param('id', new ParseUUIDPipe()) orderId: string,
-    @GetUser('id') currentUserId: string,
+    @GetUser() user: AuthenticatedUser,
   ) {
-    return this.pickingService.assignAndStartPicking(orderId, currentUserId);
+    return this.pickingService.start(orderId, user);
   }
 
-  @Post(':id/confirm')
-  @Roles(UserRole.PICKER, UserRole.WAREHOUSE_MANAGER, UserRole.ADMIN)
-  async confirmPicking(
+  @Post(':id/tasks/:taskId/confirm')
+  @HttpCode(HttpStatus.OK)
+  confirmTask(
     @Param('id', new ParseUUIDPipe()) orderId: string,
-    @GetUser('id') currentUserId: string,
-    @Body() processPickingDto: ProcessPickingDto,
+    @Param('taskId', new ParseUUIDPipe()) taskId: string,
+    @Body() dto: ConfirmPickTaskDto,
+    @GetUser() user: AuthenticatedUser,
   ) {
-    return this.pickingService.confirmPicking(
-      orderId,
-      currentUserId,
-      processPickingDto,
-    );
+    return this.pickingService.confirmTask(orderId, taskId, dto, user);
+  }
+
+  @Post(':id/reset-plan')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(Permission.PICKING_ASSIGN)
+  resetPlan(
+    @Param('id', new ParseUUIDPipe()) orderId: string,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    return this.pickingService.resetPlan(orderId, user);
   }
 }

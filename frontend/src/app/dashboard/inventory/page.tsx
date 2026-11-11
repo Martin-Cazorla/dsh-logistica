@@ -2,11 +2,19 @@
 
 'use client';
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, {
+  useState,
+  useEffect,
+  useMemo,
+  useCallback,
+  useRef,
+} from 'react';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { inventoryService } from '@/services/inventory.service';
 import PalletLabelModal from '@/components/PalletLabelModal';
 import { io, Socket } from 'socket.io-client';
+import { useAuth } from '@/context/AuthContext';
+import { SOCKET_URL } from '@/lib/axios';
 import {
   WarehouseOccupancy,
   InventoryStock,
@@ -193,10 +201,14 @@ export default function InventoryPage() {
   >({});
   const [socket, setSocket] = useState<Socket | null>(null);
 
-  const [currentUser] = useState({
-    id: 'usr-admin-1',
-    name: 'Martín Cazorla',
-  });
+  // Usuario real de la sesión (antes estaba hardcodeado con un id que no era
+  // UUID, por lo que el backend atribuía los movimientos a un usuario
+  // arbitrario de la BD).
+  const { user: authUser, token: authToken } = useAuth();
+  const currentUser = useMemo(
+    () => ({ id: authUser?.id ?? '', name: authUser?.fullName ?? '' }),
+    [authUser],
+  );
 
   // ---------------------------------------------------------------------------
   // ESTADOS: TAB 3 - HISTORIAL DE CONTENEDORES
@@ -285,18 +297,28 @@ export default function InventoryPage() {
   const ITEMS_PER_PAGE = 10;
 
   // ---------------------------------------------------------------------------
-  // INICIALIZACIÓN Y RECUPERACIÓN DESDE LOCALSTORAGE
+  // HISTORIAL DE DESCUENTOS (fuente: movimientos ADJUSTMENT del backend)
   // ---------------------------------------------------------------------------
-  useEffect(() => {
+  const loadDeductionHistory = useCallback(async () => {
     try {
-      const savedHistory = localStorage.getItem('dsh_deduction_history');
-      if (savedHistory) {
-        setDeductionHistory(JSON.parse(savedHistory));
-      }
+      const history = await inventoryService.getAdjustmentHistory(200);
+      setDeductionHistory(history);
     } catch (e) {
-      console.error('Error al recuperar historial desde localStorage', e);
+      console.error('Error al recuperar historial de descuentos', e);
     }
   }, []);
+
+  useEffect(() => {
+    // Limpieza de los "ajustes locales" de versiones anteriores: falseaban el
+    // stock mostrado respecto de la base de datos.
+    try {
+      localStorage.removeItem('dsh_stock_overrides');
+      localStorage.removeItem('dsh_deduction_history');
+    } catch {
+      // almacenamiento no disponible
+    }
+    loadDeductionHistory();
+  }, [loadDeductionHistory]);
 
   // ---------------------------------------------------------------------------
   // FUNCIONES DE CARGA DE DATOS (API)
@@ -331,29 +353,9 @@ export default function InventoryPage() {
       setSimpleWarehousesList(whList);
       setContainersHistory(contData as ContainerHistoryItem[]);
 
-      let currentStock = stData;
-      try {
-        const localOverrides = localStorage.getItem('dsh_stock_overrides');
-        if (localOverrides) {
-          const overridesMap: Record<string, number> =
-            JSON.parse(localOverrides);
-          currentStock = stData.map((st: InventoryStock) => {
-            if (overridesMap[st.id] !== undefined) {
-              return {
-                ...st,
-                quantityBultos: overridesMap[st.id],
-                updatedAt: new Date().toISOString(),
-                updatedBy: 'Martín Cazorla (Ajuste Local)',
-              };
-            }
-            return st;
-          });
-        }
-      } catch (e) {
-        console.error('Error procesando overrides locales de stock', e);
-      }
-
-      setStockList(currentStock);
+      // El stock mostrado es SIEMPRE el de la base de datos (se eliminaron los
+      // overrides de localStorage que lo falseaban).
+      setStockList(stData);
 
       if (whList.length > 0) {
         setDischargeWarehouseId((prev) =>
@@ -382,16 +384,80 @@ export default function InventoryPage() {
   // ---------------------------------------------------------------------------
   useEffect(() => {
     loadData();
+  }, [loadData]);
 
-    const socketUrl =
-      process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
-    const newSocket = io(socketUrl, { transports: ['websocket'] });
+  // Conexión Socket.IO autenticada con el JWT de la sesión. Antes:
+  //  - se conectaba sin token (el gateway no validaba identidad);
+  //  - usaba NEXT_PUBLIC_API_URL con "/api", que socket.io interpreta como el
+  //    namespace "/api" (inexistente) y la conexión fallaba.
+  useEffect(() => {
+    if (!authToken) return;
+
+    const newSocket = io(SOCKET_URL, {
+      transports: ['websocket'],
+      auth: { token: authToken },
+    });
+    newSocket.on('connect_error', (err) => {
+      console.error('WebSocket: no se pudo conectar', err.message);
+    });
     setSocket(newSocket);
 
     return () => {
       newSocket.disconnect();
+      setSocket(null);
     };
-  }, [loadData]);
+  }, [authToken]);
+
+  // Ocupación en tiempo real: el backend emite 'occupancy_updated' (agrupado)
+  // tras picking, reubicaciones, ingresos y ajustes. Se refresca sólo la
+  // ocupación, no toda la pantalla.
+  const occupancyRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!socket) return;
+
+    const onOccupancyUpdated = () => {
+      if (occupancyRefreshTimer.current) {
+        clearTimeout(occupancyRefreshTimer.current);
+      }
+      occupancyRefreshTimer.current = setTimeout(() => {
+        inventoryService
+          .getWarehouseOccupancy()
+          .then(setWarehouses)
+          .catch((err) =>
+            console.error('Error al refrescar ocupación en tiempo real', err),
+          );
+      }, 300);
+    };
+
+    socket.on('occupancy_updated', onOccupancyUpdated);
+    return () => {
+      socket.off('occupancy_updated', onOccupancyUpdated);
+      if (occupancyRefreshTimer.current) {
+        clearTimeout(occupancyRefreshTimer.current);
+      }
+    };
+  }, [socket]);
+
+  // Tras una reconexión el servidor crea un socket nuevo sin salas: se vuelve
+  // a unir al contenedor activo para seguir recibiendo bloqueos.
+  const activeContainerRef = useRef<string>('');
+  useEffect(() => {
+    activeContainerRef.current = selectedPendingContainerId;
+  }, [selectedPendingContainerId]);
+  useEffect(() => {
+    if (!socket) return;
+    const onReconnect = () => {
+      if (activeContainerRef.current) {
+        socket.emit('join_container', activeContainerRef.current);
+      }
+    };
+    socket.on('connect', onReconnect);
+    return () => {
+      socket.off('connect', onReconnect);
+    };
+  }, [socket]);
 
   useEffect(() => {
     if (!socket) return;
@@ -902,7 +968,7 @@ export default function InventoryPage() {
   }, [relocateTargetLocations, relocateSearchLocQuery]);
 
   // ---------------------------------------------------------------------------
-  // MANEJADOR ROBUSTO DE DESCUENTO DE STOCK CON PERSISTENCIA EN LOCALSTORAGE
+  // DESCUENTO DE STOCK (persistido y auditado en el backend)
   // ---------------------------------------------------------------------------
   const handleConfirmDeduction = async () => {
     if (!deductStockItem) return;
@@ -930,97 +996,26 @@ export default function InventoryPage() {
 
     setSubmitting(true);
     try {
-      try {
-        if (
-          typeof (inventoryService as unknown as Record<string, unknown>)
-            .adjustStock === 'function'
-        ) {
-          await (
-            inventoryService as unknown as {
-              adjustStock: (data: unknown) => Promise<unknown>;
-            }
-          ).adjustStock({
-            inventoryId: deductSourceInventoryId,
-            quantityBultos: amountToDeduct,
-            reason: deductReason.trim(),
-            userId: currentUser.id,
-          });
-        } else {
-          await inventoryService.transferStock({
-            inventoryId: deductSourceInventoryId,
-            targetLocationId: deductSourceInventoryId,
-            quantityBultos: amountToDeduct,
-            userId: currentUser.id,
-          });
-        }
-      } catch (backendError) {
-        console.warn(
-          'Backend transferStock/adjustStock respondió error HTTP. Se registra y aplica localmente:',
-          backendError,
-        );
-      }
-
-      const newStockQuantity = source.quantityBultos - amountToDeduct;
-
-      setStockList((prevStock) =>
-        prevStock
-          .map((item) => {
-            if (item.id === deductSourceInventoryId) {
-              return {
-                ...item,
-                quantityBultos: newStockQuantity,
-                updatedAt: new Date().toISOString(),
-                updatedBy: currentUser.name,
-              };
-            }
-            return item;
-          })
-          .filter((item) => item.quantityBultos > 0),
-      );
-
-      try {
-        const existingOverrides = JSON.parse(
-          localStorage.getItem('dsh_stock_overrides') || '{}',
-        );
-        existingOverrides[deductSourceInventoryId] = newStockQuantity;
-        localStorage.setItem(
-          'dsh_stock_overrides',
-          JSON.stringify(existingOverrides),
-        );
-      } catch (e) {
-        console.error('Error guardando override de stock en localStorage', e);
-      }
-
-      const newHistoryEntry: StockDeductionHistory = {
-        id: `deduct-${Date.now()}`,
-        productSku: deductStockItem.productSku,
+      // Descuento real en el backend (movimiento ADJUSTMENT auditado con el
+      // usuario del JWT). Antes, si el backend fallaba, el error se ignoraba y
+      // el descuento se "aplicaba" sólo en localStorage: la pantalla mostraba
+      // un stock que no existía en la base de datos.
+      const result = await inventoryService.adjustStock({
+        inventoryId: deductSourceInventoryId,
         quantityBultos: amountToDeduct,
         reason: deductReason.trim(),
-        performedBy: currentUser.name,
-        timestamp: new Date().toLocaleString('es-AR'),
-        locationCode: source.locationCode,
-      };
-
-      const updatedHistory = [newHistoryEntry, ...deductionHistory];
-      setDeductionHistory(updatedHistory);
-
-      try {
-        localStorage.setItem(
-          'dsh_deduction_history',
-          JSON.stringify(updatedHistory),
-        );
-      } catch (e) {
-        console.error('Error al guardar historial en localStorage', e);
-      }
+      });
 
       setSuccessMsg(
-        `Se descontaron ${amountToDeduct} bultos del SKU ${deductStockItem.productSku} correctamente. Stock restante: ${newStockQuantity} bultos.`,
+        `Se descontaron ${amountToDeduct} bultos del SKU ${deductStockItem.productSku} correctamente. Stock restante: ${result.remainingQuantity} bultos.`,
       );
 
       setDeductStockItem(null);
       setDeductSourceInventoryId('');
       setDeductQuantity(1);
       setDeductReason('');
+
+      await Promise.all([loadData(), loadDeductionHistory()]);
     } catch (err: unknown) {
       const error = err as { response?: { data?: { message?: string } } };
       setErrorMsg(

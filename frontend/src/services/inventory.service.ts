@@ -1,6 +1,6 @@
 // frontend/src/services/inventory.service.ts
 
-import axios from 'axios';
+import api from '@/lib/axios';
 import {
   WarehouseOccupancy,
   InventoryStock,
@@ -11,55 +11,78 @@ import {
   LocationStockDetail,
 } from '@/types/inventory.types';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
+export interface TransferStockPayload {
+  inventoryId: string;
+  targetLocationId: string;
+  targetWarehouseId?: string;
+  quantityBultos: number;
+  notes?: string;
+  /** @deprecated Ignorado: el backend usa el usuario del JWT. */
+  userId?: string;
+}
 
-const api = axios.create({
-  baseURL: API_URL,
-  headers: {
-    'Content-Type': 'application/json',
-  },
-});
+export interface AdjustStockPayload {
+  inventoryId: string;
+  quantityBultos: number;
+  reason: string;
+  /** @deprecated Ignorado: el backend usa el usuario del JWT. */
+  userId?: string;
+}
 
+export interface StockAdjustmentRecord {
+  id: string;
+  productSku: string;
+  quantityBultos: number;
+  reason: string;
+  performedBy: string;
+  timestamp: string;
+  locationCode: string;
+}
+
+/**
+ * Usa el cliente Axios compartido (@/lib/axios) que adjunta el JWT.
+ * Antes este archivo creaba su propia instancia sin interceptor: todas las
+ * llamadas de inventario viajaban sin Authorization.
+ */
 export const inventoryService = {
-  // Obtener resumen de ocupación de depósitos
+  // Resumen de ocupación de depósitos (m³)
   async getWarehouseOccupancy(): Promise<WarehouseOccupancy[]> {
-    const response = await api.get('/inventory/occupancy');
+    const response = await api.get<WarehouseOccupancy[]>('/inventory/occupancy');
     return response.data;
   },
 
-  // Obtener lista simple de depósitos
+  // Lista simple de depósitos activos
   async getWarehousesList(): Promise<{ id: string; name: string }[]> {
-    const response = await api.get('/inventory/warehouses');
+    const response = await api.get<{ id: string; name: string }[]>(
+      '/inventory/warehouses',
+    );
     return response.data;
   },
 
-  // Crear un nuevo depósito
   async createWarehouse(data: CreateWarehouseDto) {
     const response = await api.post('/inventory/warehouse', data);
     return response.data;
   },
 
-  // Eliminar un depósito por ID
   async deleteWarehouse(warehouseId: string) {
     const response = await api.delete(`/inventory/warehouse/${warehouseId}`);
     return response.data;
   },
 
-  // Obtener ubicaciones disponibles de un depósito
   async getAvailableLocations(
     warehouseId: string,
   ): Promise<PhysicalLocation[]> {
-    const response = await api.get(`/inventory/locations/${warehouseId}`);
+    const response = await api.get<PhysicalLocation[]>(
+      `/inventory/locations/${warehouseId}`,
+    );
     return response.data;
   },
 
-  // Generar ubicaciones en lote
   async generateBatchLocations(data: BatchLocationDto) {
     const response = await api.post('/inventory/locations/batch', data);
     return response.data;
   },
 
-  // Actualizar capacidad de ubicaciones masivamente
   async updateLocationsCapacity(
     updates: Array<{ id: string; capacity: number }>,
   ) {
@@ -69,7 +92,6 @@ export const inventoryService = {
     return response.data;
   },
 
-  // Eliminar ubicaciones en lote
   async deleteLocationsBatch(locationIds: string[]) {
     const response = await api.delete('/inventory/locations/batch', {
       data: { locationIds },
@@ -77,43 +99,66 @@ export const inventoryService = {
     return response.data;
   },
 
-  // Obtener lista consolidada de stock
   async getStockList(
     warehouseId?: string,
     search?: string,
   ): Promise<InventoryStock[]> {
-    const response = await api.get('/inventory/stock', {
-      params: { warehouseId, search },
+    const response = await api.get<InventoryStock[]>('/inventory/stock', {
+      params: {
+        ...(warehouseId ? { warehouseId } : {}),
+        ...(search ? { search } : {}),
+      },
     });
     return response.data;
   },
 
-  // Transferir/Reubicar stock entre posiciones
-  async transferStock(data: {
-    inventoryId: string;
-    targetLocationId: string;
-    quantityBultos: number;
-    userId?: string;
-  }) {
-    const response = await api.post('/inventory/stock/transfer', data);
+  // Reubicar stock entre posiciones / depósitos
+  async transferStock(data: TransferStockPayload) {
+    const response = await api.post('/inventory/stock/transfer', {
+      inventoryId: data.inventoryId,
+      targetLocationId: data.targetLocationId,
+      targetWarehouseId: data.targetWarehouseId,
+      quantityBultos: data.quantityBultos,
+      notes: data.notes,
+    });
+    return response.data;
+  },
+
+  // Descuento manual auditado (movimiento ADJUSTMENT en el backend)
+  async adjustStock(data: AdjustStockPayload) {
+    const response = await api.post<{
+      success: boolean;
+      remainingQuantity: number;
+      message: string;
+    }>('/inventory/stock/adjust', {
+      inventoryId: data.inventoryId,
+      quantityBultos: data.quantityBultos,
+      reason: data.reason,
+    });
+    return response.data;
+  },
+
+  async getAdjustmentHistory(limit = 100): Promise<StockAdjustmentRecord[]> {
+    const response = await api.get<StockAdjustmentRecord[]>(
+      '/inventory/stock/adjustments',
+      { params: { limit } },
+    );
     return response.data;
   },
 
   // Pre-cargar Packing List (Fase 1)
-  async createPackingList(data: any) {
+  async createPackingList(data: unknown) {
     const response = await api.post('/inventory/inbound/packing-list', data);
     return response.data;
   },
 
-  // Obtener historial de contenedores
   async getContainersHistory(status?: string) {
     const response = await api.get('/inventory/inbound/containers', {
-      params: { status },
+      params: status ? { status } : {},
     });
     return response.data;
   },
 
-  // Eliminar un contenedor
   async deleteContainer(containerId: string) {
     const response = await api.delete(
       `/inventory/inbound/container/${containerId}`,
@@ -122,7 +167,7 @@ export const inventoryService = {
   },
 
   // Procesar descarga e ingreso al stock (Fase 2)
-  async processInbound(containerId: string, items: any[]) {
+  async processInbound(containerId: string, items: unknown[]) {
     const response = await api.post('/inventory/inbound/process', {
       containerId,
       items,
@@ -130,19 +175,18 @@ export const inventoryService = {
     return response.data;
   },
 
-  // ---------------------------------------------------------------------------
-  // CARGA MANUAL DE STOCK E INVENTARIO POR UBICACIÓN
-  // ---------------------------------------------------------------------------
-
-  // Registrar toma / carga manual de stock directo por posición
+  // Carga manual de stock por posición
   async createManualStock(data: CreateManualStockDto) {
-    const response = await api.post('/inventory/manual-stock', data);
+    const { userId: _ignored, ...payload } = data;
+    void _ignored;
+    const response = await api.post('/inventory/manual-stock', payload);
     return response.data;
   },
 
-  // Obtener el stock detallado alojado en una posición específica
   async getStockByLocation(locationId: string): Promise<LocationStockDetail[]> {
-    const response = await api.get(`/inventory/location-stock/${locationId}`);
+    const response = await api.get<LocationStockDetail[]>(
+      `/inventory/location-stock/${locationId}`,
+    );
     return response.data;
   },
 };

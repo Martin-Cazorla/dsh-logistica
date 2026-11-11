@@ -1,28 +1,45 @@
+// dsh-logistica/src/orders/controllers/order-checking.controller.ts
+
 import {
   Controller,
+  Get,
   Post,
+  Body,
   Param,
   ParseUUIDPipe,
-  UseGuards,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
-import { RolesGuard } from '../../auth/guards/roles.guard';
-import { Roles } from '../../auth/decorators/roles.decorator';
+import { RequirePermissions } from '../../auth/decorators/permissions.decorator';
+import { Permission } from '../../auth/permissions';
 import { GetUser } from '../../auth/decorators/get-user.decorator';
-import { UserRole } from '@prisma/client';
+import type { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { OrderCheckingService } from '../services/order-checking.service';
+import { ConfirmCheckingDto } from '../dto/checking-order.dto';
 
+/** Punto de Control 1 (auditoría en playa, opcional). */
 @Controller('orders/check')
-@UseGuards(AuthGuard('jwt'), RolesGuard)
+@RequirePermissions(Permission.CHECKING_EXECUTE)
 export class OrderCheckingController {
   constructor(private readonly orderCheckingService: OrderCheckingService) {}
 
+  @Get('pending')
+  getPickedOrders() {
+    return this.orderCheckingService.getPickedOrders();
+  }
+
+  @Get(':id')
+  getOrderForChecking(@Param('id', new ParseUUIDPipe()) orderId: string) {
+    return this.orderCheckingService.getOrderForChecking(orderId);
+  }
+
   @Post(':id/verify')
-  @Roles(UserRole.WAREHOUSE_MANAGER, UserRole.ADMIN)
-  async verifyOrder(
+  @HttpCode(HttpStatus.OK)
+  verifyOrder(
     @Param('id', new ParseUUIDPipe()) orderId: string,
-    @GetUser('id') auditorId: string,
+    @GetUser() auditor: AuthenticatedUser,
+    @Body() dto: ConfirmCheckingDto,
   ) {
-    return this.orderCheckingService.verifyOrderItems(orderId, auditorId);
+    return this.orderCheckingService.verifyOrderItems(orderId, auditor, dto);
   }
 }

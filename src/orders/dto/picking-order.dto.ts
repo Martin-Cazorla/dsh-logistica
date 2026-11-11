@@ -1,32 +1,29 @@
+// dsh-logistica/src/orders/dto/picking-order.dto.ts
+
 import {
-  IsNotEmpty,
-  IsUUID,
-  IsArray,
-  ValidateNested,
+  ArrayMaxSize,
   ArrayMinSize,
+  IsArray,
   IsInt,
+  IsUUID,
   Min,
 } from 'class-validator';
-import { Type } from 'class-transformer';
 
-export class PickItemDto {
-  @IsUUID()
-  @IsNotEmpty()
-  productId: string;
-
-  @IsUUID()
-  @IsNotEmpty()
-  locationId: string; // Ubicación exacta desde donde se toma el producto
-
-  @IsInt()
-  @Min(1)
-  bultos: number; // Cantidad de bultos efectivamente tomados de esa posición
-}
-
-export class ProcessPickingDto {
+/** Asignación de uno o varios pickers a un pedido (reemplaza el conjunto). */
+export class AssignPickersDto {
   @IsArray()
   @ArrayMinSize(1)
-  @ValidateNested({ each: true })
-  @Type(() => PickItemDto)
-  pickedItems: PickItemDto[];
+  @ArrayMaxSize(10)
+  @IsUUID('all', { each: true })
+  pickerIds: string[];
+}
+
+/**
+ * Confirmación de UNA línea del recorrido. `quantity` < cantidad planificada
+ * registra un faltante (SHORT) y libera el resto de la reserva.
+ */
+export class ConfirmPickTaskDto {
+  @IsInt()
+  @Min(0)
+  quantity: number;
 }

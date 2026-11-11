@@ -2,337 +2,418 @@
 
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import ProtectedRoute from '@/components/ProtectedRoute';
+import React, { useCallback, useEffect, useState } from 'react';
+import AppShell from '@/components/layout/AppShell';
+import { useAuth } from '@/context/AuthContext';
 import { pickingService } from '@/services/picking.service';
-import { PickingOrder, PickingOrderItem } from '@/types/picking.types';
+import { getApiErrorMessage } from '@/lib/axios';
+import { can } from '@/lib/permissions';
+import { formatNumber } from '@/lib/format';
+import {
+  ORDER_STATUS_LABELS,
+  PickingOrderDetail,
+  PickingOrderSummary,
+  PickTask,
+} from '@/types/picking.types';
+import {
+  Alert,
+  Badge,
+  Button,
+  EmptyState,
+  LoadingBlock,
+  Modal,
+  PageHeader,
+  Tabs,
+} from '@/components/ui';
+
+type TabKey = 'PENDING' | 'PICKED';
 
 export default function PickingPage() {
-  const [orders, setOrders] = useState<PickingOrder[]>([]);
-  const [selectedOrder, setSelectedOrder] = useState<PickingOrder | null>(null);
-  const [itemsState, setItemsState] = useState<Record<string, number>>({});
-  const [loading, setLoading] = useState<boolean>(true);
-  const [submitting, setSubmitting] = useState<boolean>(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  return (
+    <AppShell permissions={['PICKING_EXECUTE']}>
+      <PickingScreen />
+    </AppShell>
+  );
+}
 
-  // Cargar pedidos asignados al montar la vista
-  useEffect(() => {
-    loadAssignedOrders();
-  }, []);
+function PickingScreen() {
+  const { user } = useAuth();
+  const [orders, setOrders] = useState<PickingOrderSummary[]>([]);
+  const [detail, setDetail] = useState<PickingOrderDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [tab, setTab] = useState<TabKey>('PENDING');
+  const [confirmTask, setConfirmTask] = useState<PickTask | null>(null);
+  const [confirmQty, setConfirmQty] = useState(0);
 
-  const loadAssignedOrders = async () => {
+  const isSupervisor = can(user?.role, 'PICKING_ASSIGN');
+
+  const loadList = useCallback(async () => {
     setLoading(true);
-    setErrorMsg(null);
+    setError(null);
     try {
-      const data = await pickingService.getAssignedOrders();
-      setOrders(data);
-    } catch (err: any) {
-      setErrorMsg(
-        err.response?.data?.message ||
-          'Error al cargar los pedidos de picking.',
-      );
+      setOrders(await pickingService.getMyList());
+    } catch (err) {
+      setError(getApiErrorMessage(err, 'Error al cargar los pedidos asignados.'));
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  // Seleccionar un pedido para iniciar la recolección
-  const handleSelectOrder = (order: PickingOrder) => {
-    setSelectedOrder(order);
-    // Inicializar cantidades recolectadas con las requeridas por defecto
-    const initialState: Record<string, number> = {};
-    order.items.forEach((item) => {
-      initialState[item.id] = item.quantityRequested;
-    });
-    setItemsState(initialState);
-    setErrorMsg(null);
-    setSuccessMsg(null);
-  };
+  useEffect(() => {
+    loadList();
+  }, [loadList]);
 
-  // Manejar el incremento / decremento de bultos con botones táctiles gigantes
-  const handleQuantityChange = (
-    itemId: string,
-    delta: number,
-    maxQty: number,
-  ) => {
-    setItemsState((prev) => {
-      const current = prev[itemId] || 0;
-      const updated = Math.min(Math.max(0, current + delta), maxQty);
-      return { ...prev, [itemId]: updated };
-    });
-  };
-
-  // Confirmar el armado total del pedido
-  const handleConfirmPicking = async () => {
-    if (!selectedOrder) return;
-
-    setSubmitting(true);
-    setErrorMsg(null);
-
-    const payload = {
-      orderId: selectedOrder.id,
-      itemsPicked: Object.entries(itemsState).map(
-        ([orderItemId, quantityPicked]) => ({
-          orderItemId,
-          quantityPicked,
-        }),
-      ),
-    };
-
+  const openOrder = async (order: PickingOrderSummary) => {
+    setBusy(true);
+    setError(null);
+    setSuccess(null);
     try {
-      await pickingService.confirmPicking(payload);
-      setSuccessMsg(
-        `Pedido #${selectedOrder.orderNumber} marcado como ARMADO (PICKED) exitosamente.`,
-      );
-      setSelectedOrder(null);
-      await loadAssignedOrders();
-    } catch (err: any) {
-      setErrorMsg(
-        err.response?.data?.message || 'Error al registrar el picking.',
-      );
+      // start() es idempotente: genera el recorrido si el pedido está PENDING
+      const data =
+        order.status === 'PENDING'
+          ? await pickingService.start(order.id)
+          : await pickingService.getDetail(order.id);
+      setDetail(data);
+      setTab('PENDING');
+      if (data.plannedWithShortages) {
+        setError('Atención: no hay stock suficiente para algunos artículos. Revise los faltantes.');
+      }
+    } catch (err) {
+      setError(getApiErrorMessage(err, 'No fue posible abrir el pedido.'));
+      await loadList();
     } finally {
-      setSubmitting(false);
+      setBusy(false);
     }
   };
 
-  return (
-    <ProtectedRoute allowedRoles={['PICKER', 'WAREHOUSE_MANAGER', 'ADMIN']}>
-      <div className="min-h-screen bg-slate-900 text-slate-100 p-3 sm:p-6 font-sans">
-        {/* Encabezado Principal */}
-        <div className="flex justify-between items-center bg-slate-800 p-4 rounded-xl border border-slate-700 shadow-md mb-6">
-          <div>
-            <h1 className="text-xl sm:text-2xl font-bold text-amber-400 tracking-wide">
-              Móvil de Picking & Armado
-            </h1>
-            <p className="text-xs sm:text-sm text-slate-400">
-              Operativa de bultos cerrados para colectoras táctiles
-            </p>
-          </div>
-          <button
-            onClick={loadAssignedOrders}
-            className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg text-sm font-semibold transition-colors border border-slate-600"
-          >
-            Actualizar
-          </button>
-        </div>
+  const refreshDetail = async () => {
+    if (!detail) return;
+    setBusy(true);
+    try {
+      setDetail(await pickingService.getDetail(detail.id));
+    } catch (err) {
+      setError(getApiErrorMessage(err, 'No se pudo actualizar el pedido.'));
+    } finally {
+      setBusy(false);
+    }
+  };
 
-        {/* Mensajes de Notificación */}
-        {errorMsg && (
-          <div className="bg-red-900/80 border border-red-500 text-red-200 p-4 rounded-xl mb-6 text-sm font-semibold">
-            ⚠️ {errorMsg}
-          </div>
-        )}
-        {successMsg && (
-          <div className="bg-emerald-900/80 border border-emerald-500 text-emerald-200 p-4 rounded-xl mb-6 text-sm font-semibold">
-            ✅ {successMsg}
-          </div>
-        )}
+  const askConfirm = (task: PickTask) => {
+    setConfirmTask(task);
+    setConfirmQty(task.quantity);
+  };
 
-        {/* Carga Inicial */}
+  const submitConfirm = async () => {
+    if (!detail || !confirmTask) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await pickingService.confirmTask(detail.id, confirmTask.id, confirmQty);
+      setDetail(updated);
+      setConfirmTask(null);
+      if (updated.status === 'PICKED') {
+        setSuccess(`Pedido #${updated.orderNumber} completo: pasó a ARMADO.`);
+      }
+    } catch (err) {
+      setError(getApiErrorMessage(err, 'No se pudo confirmar la línea.'));
+      await refreshDetail();
+      setConfirmTask(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // LISTA DE PEDIDOS
+  // ---------------------------------------------------------------------------
+  if (!detail) {
+    return (
+      <div>
+        <PageHeader
+          title="Picking"
+          subtitle={
+            isSupervisor
+              ? 'Pedidos pendientes y en armado de todos los operarios.'
+              : 'Sus pedidos asignados. El recorrido se genera en una sola dirección por el depósito.'
+          }
+          actions={
+            <Button variant="secondary" onClick={loadList} loading={loading}>
+              Actualizar
+            </Button>
+          }
+        />
+        {error && <Alert kind="error" onClose={() => setError(null)}>{error}</Alert>}
+        {success && <Alert kind="success" onClose={() => setSuccess(null)}>{success}</Alert>}
+
         {loading ? (
-          <div className="text-center py-12">
-            <div className="inline-block animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-amber-400"></div>
-            <p className="mt-4 text-slate-400 font-medium text-sm">
-              Cargando hojas de picking...
-            </p>
-          </div>
-        ) : !selectedOrder ? (
-          /* VISTA 1: Lista de Pedidos Asignados */
-          <div>
-            <h2 className="text-lg font-semibold text-slate-200 mb-4 flex items-center gap-2">
-              <span>📦</span> Pedidos Pendientes de Armado ({orders.length})
-            </h2>
-
-            {orders.length === 0 ? (
-              <div className="bg-slate-800 p-8 rounded-xl border border-slate-700 text-center text-slate-400">
-                No hay pedidos asignados para armado en este momento.
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {orders.map((order) => (
-                  <div
-                    key={order.id}
-                    className="bg-slate-800 border border-slate-700 hover:border-amber-500/50 rounded-xl p-5 flex flex-col justify-between transition-all shadow-lg"
-                  >
-                    <div>
-                      <div className="flex justify-between items-start mb-3">
-                        <span className="text-lg font-bold text-amber-400">
-                          #{order.orderNumber}
-                        </span>
-                        <span className="text-xs px-2.5 py-1 bg-amber-500/10 text-amber-400 border border-amber-500/30 rounded-full font-bold">
-                          {order.status}
-                        </span>
-                      </div>
-                      <p className="text-sm font-semibold text-slate-200 mb-1">
-                        {order.customerName}
-                      </p>
-                      <p className="text-xs text-slate-400 mb-3">
-                        Depósito: {order.warehouseName}
-                      </p>
-
-                      <div className="flex justify-between text-xs bg-slate-900/60 p-3 rounded-lg border border-slate-700/50 mb-4">
-                        <div>
-                          <span className="text-slate-500 block">
-                            Bultos Totales
-                          </span>
-                          <span className="text-sm font-bold text-slate-200">
-                            {order.totalBultos} cjs/pallets
-                          </span>
-                        </div>
-                        <div className="text-right">
-                          <span className="text-slate-500 block">
-                            Peso Estimado
-                          </span>
-                          <span className="text-sm font-bold text-slate-200">
-                            {order.totalWeightKg} Kg
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => handleSelectOrder(order)}
-                      className="w-full py-3.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold rounded-xl transition-all shadow-md active:scale-[0.98] text-base"
-                    >
-                      Iniciar Armado ➔
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <LoadingBlock text="Cargando hojas de picking..." />
+        ) : orders.length === 0 ? (
+          <EmptyState
+            title="No tiene pedidos asignados"
+            description="Cuando un Gestor le asigne un pedido aparecerá aquí."
+          />
         ) : (
-          /* VISTA 2: Detalle Táctil del Pedido Seleccionado */
-          <div>
-            <div className="flex justify-between items-center mb-4">
-              <button
-                onClick={() => setSelectedOrder(null)}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-sm font-bold border border-slate-700"
-              >
-                ← Volver a la Lista
-              </button>
-              <div className="text-right">
-                <span className="text-xs text-slate-400">Armando Pedido:</span>
-                <p className="text-base font-extrabold text-amber-400">
-                  #{selectedOrder.orderNumber}
-                </p>
-              </div>
-            </div>
-
-            {/* Lista de Ítems a Recolectar por Ubicación */}
-            <div className="space-y-4 mb-6">
-              {selectedOrder.items.map((item, index) => {
-                const currentQty = itemsState[item.id] || 0;
-                const isComplete = currentQty === item.quantityRequested;
-
-                return (
-                  <div
-                    key={item.id}
-                    className={`bg-slate-800 border rounded-xl p-4 sm:p-5 transition-all shadow-md ${
-                      isComplete
-                        ? 'border-emerald-500/60 bg-emerald-950/10'
-                        : 'border-slate-700'
-                    }`}
-                  >
-                    {/* Ubicación Física en Depósito */}
-                    <div className="flex items-center justify-between bg-slate-900 p-3 rounded-lg border border-slate-700 mb-3">
-                      <div className="flex items-center gap-2">
-                        <span className="text-amber-400 font-bold text-base">
-                          📍 Posición {index + 1}:
-                        </span>
-                        <span className="text-sm font-extrabold text-white tracking-wider">
-                          {item.location
-                            ? item.location.code
-                            : 'Ubicación General'}
-                        </span>
-                      </div>
-                      {item.location?.comments && (
-                        <span className="text-xs text-amber-300/80 bg-amber-500/10 px-2 py-1 rounded border border-amber-500/20">
-                          {item.location.comments}
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Información del Producto */}
-                    <div className="mb-4">
-                      <p className="text-base font-bold text-slate-100">
-                        {item.product.name}
-                      </p>
-                      <p className="text-xs text-slate-400">
-                        SKU: {item.product.sku} | Unidad:{' '}
-                        {item.product.packagingUnit}
-                      </p>
-                    </div>
-
-                    {/* Selector Táctil Gigante de Cantidades */}
-                    <div className="flex items-center justify-between bg-slate-900/80 p-2.5 rounded-xl border border-slate-700">
-                      <span className="text-xs font-bold text-slate-400 pl-2">
-                        Requeridos:{' '}
-                        <strong className="text-white text-sm">
-                          {item.quantityRequested}
-                        </strong>
-                      </span>
-
-                      <div className="flex items-center gap-3">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleQuantityChange(
-                              item.id,
-                              -1,
-                              item.quantityRequested,
-                            )
-                          }
-                          className="w-12 h-12 bg-slate-700 active:bg-slate-600 text-white font-extrabold rounded-lg text-xl flex items-center justify-center border border-slate-600 shadow"
-                        >
-                          -
-                        </button>
-
-                        <span className="text-xl font-black text-amber-400 min-w-[2.5rem] text-center">
-                          {currentQty}
-                        </span>
-
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleQuantityChange(
-                              item.id,
-                              1,
-                              item.quantityRequested,
-                            )
-                          }
-                          className="w-12 h-12 bg-amber-500 active:bg-amber-400 text-slate-950 font-extrabold rounded-lg text-xl flex items-center justify-center shadow"
-                        >
-                          +
-                        </button>
-                      </div>
-                    </div>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {orders.map((o) => {
+              const pct =
+                o.progress.totalTasks > 0
+                  ? Math.round((o.progress.doneTasks / o.progress.totalTasks) * 100)
+                  : 0;
+              return (
+                <button
+                  key={o.id}
+                  disabled={busy}
+                  onClick={() => openOrder(o)}
+                  className="rounded-xl border border-slate-700 bg-slate-800 p-4 text-left transition-colors hover:border-amber-500 disabled:opacity-60"
+                >
+                  <div className="flex items-start justify-between">
+                    <span className="font-mono text-lg font-black text-white">#{o.orderNumber}</span>
+                    <Badge tone={o.status === 'PENDING' ? 'amber' : 'sky'}>
+                      {ORDER_STATUS_LABELS[o.status]}
+                    </Badge>
                   </div>
-                );
-              })}
-            </div>
-
-            {/* Botón Flotante/Final de Confirmación de Armado */}
-            <div className="sticky bottom-4 bg-slate-900/90 backdrop-blur-md p-4 rounded-xl border border-slate-700 shadow-2xl">
-              <button
-                type="button"
-                onClick={handleConfirmPicking}
-                disabled={submitting}
-                className="w-full py-4 bg-emerald-500 hover:bg-emerald-400 disabled:bg-slate-700 text-slate-950 font-black rounded-xl text-lg transition-all shadow-lg active:scale-[0.99] flex items-center justify-center gap-2"
-              >
-                {submitting ? (
-                  <span>Registrando Armado...</span>
-                ) : (
-                  <>
-                    <span>✅ CONFIRMAR ARMADO COMPLETO</span>
-                  </>
-                )}
-              </button>
-            </div>
+                  <p className="mt-1 font-bold text-slate-200">{o.customerName}</p>
+                  <p className="text-xs text-slate-400">
+                    {o.warehouseName} · {o.city}
+                  </p>
+                  <p className="mt-2 text-sm text-slate-300">
+                    {o.totalBultos} bultos · {formatNumber(o.totalWeightKg, 1)} kg
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {o.assignedPickers.map((p) => p.name).join(', ') || 'Sin pickers asignados'}
+                  </p>
+                  {o.status === 'IN_PICKING' && (
+                    <div className="mt-3">
+                      <div className="h-2 overflow-hidden rounded-full bg-slate-700">
+                        <div className="h-full bg-emerald-500" style={{ width: `${pct}%` }} />
+                      </div>
+                      <p className="mt-1 text-[11px] text-slate-400">
+                        {o.progress.doneTasks}/{o.progress.totalTasks} líneas
+                      </p>
+                    </div>
+                  )}
+                  <span className="mt-3 block rounded-lg bg-amber-500 py-2 text-center text-sm font-black text-slate-950">
+                    {o.status === 'PENDING' ? 'INICIAR RECORRIDO' : 'CONTINUAR'}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         )}
       </div>
-    </ProtectedRoute>
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // DETALLE: RECORRIDO UNIDIRECCIONAL
+  // ---------------------------------------------------------------------------
+  const nextTask = detail.pendingTasks[0];
+
+  return (
+    <div>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-700 bg-slate-800 p-4">
+        <div>
+          <p className="text-xs uppercase tracking-widest text-slate-400">Pedido</p>
+          <p className="font-mono text-xl font-black text-amber-400">#{detail.orderNumber}</p>
+          <p className="text-sm text-slate-300">
+            {detail.customerName} · {detail.warehouseName}
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Button variant="secondary" onClick={refreshDetail} loading={busy}>
+            Actualizar
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => {
+              setDetail(null);
+              loadList();
+            }}
+          >
+            ← Volver
+          </Button>
+        </div>
+      </div>
+
+      {error && <Alert kind="error" onClose={() => setError(null)}>{error}</Alert>}
+      {success && <Alert kind="success" onClose={() => setSuccess(null)}>{success}</Alert>}
+
+      {detail.shortages.length > 0 && (
+        <Alert kind="warning">
+          <p className="font-bold">Faltantes de stock</p>
+          <ul className="mt-1 list-disc pl-5 text-xs">
+            {detail.shortages.map((s) => (
+              <li key={s.orderItemId}>
+                {s.productSku} {s.productName}: pedido {s.requested}, planificado {s.planned}, tomado{' '}
+                {s.picked}
+              </li>
+            ))}
+          </ul>
+        </Alert>
+      )}
+
+      {nextTask && tab === 'PENDING' && (
+        <div className="mb-4 rounded-2xl border-2 border-amber-500 bg-amber-500/10 p-4">
+          <p className="text-xs font-bold uppercase tracking-widest text-amber-300">
+            Próxima parada #{nextTask.sequence}
+          </p>
+          <p className="mt-1 font-mono text-3xl font-black text-white">{nextTask.location.code}</p>
+          <p className="text-sm text-slate-300">
+            Zona {nextTask.location.zone} · Módulo {nextTask.location.module} · Nivel{' '}
+            {nextTask.location.level}
+          </p>
+          <p className="mt-2 text-lg font-bold text-white">
+            {nextTask.quantity} × {nextTask.productSku}{' '}
+            <span className="font-normal text-slate-300">{nextTask.productName}</span>
+          </p>
+          <Button size="lg" className="mt-3 w-full" onClick={() => askConfirm(nextTask)} disabled={busy}>
+            CONFIRMAR TOMA
+          </Button>
+        </div>
+      )}
+
+      <Tabs<TabKey>
+        value={tab}
+        onChange={setTab}
+        tabs={[
+          { key: 'PENDING', label: 'Pendientes', count: detail.pendingTasks.length },
+          { key: 'PICKED', label: 'Pickeados', count: detail.pickedTasks.length },
+        ]}
+      />
+
+      {tab === 'PENDING' ? (
+        detail.route.length === 0 ? (
+          <EmptyState
+            title={detail.status === 'PICKED' ? 'Pedido completo' : 'Sin líneas pendientes'}
+            description={
+              detail.status === 'PICKED'
+                ? 'Todas las líneas fueron confirmadas. El pedido pasa a control.'
+                : undefined
+            }
+          />
+        ) : (
+          <ol className="space-y-4">
+            {detail.route.map((group, gi) => (
+              <li key={`${group.zone}-${gi}`}>
+                <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-slate-400">
+                  <span className="rounded bg-slate-700 px-2 py-0.5 text-slate-100">Zona {gi + 1}</span>
+                  {group.zone}
+                  <span className="text-amber-400">
+                    {group.direction === 'ASC' ? '→ módulos ascendentes' : '← módulos descendentes'}
+                  </span>
+                </div>
+                <ul className="space-y-2">
+                  {group.tasks.map((task) => (
+                    <TaskRow key={task.id} task={task} onConfirm={() => askConfirm(task)} disabled={busy} />
+                  ))}
+                </ul>
+              </li>
+            ))}
+          </ol>
+        )
+      ) : detail.pickedTasks.length === 0 ? (
+        <EmptyState title="Todavía no hay líneas pickeadas" />
+      ) : (
+        <ul className="space-y-2">
+          {detail.pickedTasks.map((task) => (
+            <li key={task.id} className="rounded-xl border border-slate-700 bg-slate-900 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="font-mono font-bold text-slate-200">{task.location.code}</p>
+                <Badge tone={task.status === 'PICKED' ? 'emerald' : 'red'}>
+                  {task.status === 'PICKED' ? 'Completo' : 'Faltante'}
+                </Badge>
+              </div>
+              <p className="text-sm text-slate-300">
+                {task.pickedQty}/{task.quantity} × {task.productSku} {task.productName}
+              </p>
+              <p className="text-[11px] text-slate-500">
+                {task.pickedBy} · {task.pickedAt ? new Date(task.pickedAt).toLocaleTimeString('es-AR') : ''}
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <Modal
+        open={!!confirmTask}
+        title={`Confirmar toma en ${confirmTask?.location.code ?? ''}`}
+        onClose={() => setConfirmTask(null)}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setConfirmTask(null)}>
+              Cancelar
+            </Button>
+            <Button
+              variant={confirmTask && confirmQty < confirmTask.quantity ? 'danger' : 'success'}
+              onClick={submitConfirm}
+              loading={busy}
+            >
+              {confirmTask && confirmQty < confirmTask.quantity ? 'Confirmar con faltante' : 'Confirmar'}
+            </Button>
+          </>
+        }
+      >
+        {confirmTask && (
+          <div className="text-center">
+            <p className="text-sm text-slate-400">
+              {confirmTask.productSku} · {confirmTask.productName}
+            </p>
+            <p className="text-xs text-slate-500">Lote {confirmTask.lotNumber}</p>
+            <div className="mt-4 flex items-center justify-center gap-4">
+              <button
+                className="h-16 w-16 rounded-2xl bg-slate-700 text-3xl font-black text-white"
+                onClick={() => setConfirmQty((q) => Math.max(0, q - 1))}
+                aria-label="Restar un bulto"
+              >
+                −
+              </button>
+              <span className="w-24 text-5xl font-black tabular-nums text-white">{confirmQty}</span>
+              <button
+                className="h-16 w-16 rounded-2xl bg-slate-700 text-3xl font-black text-white"
+                onClick={() => setConfirmQty((q) => Math.min(confirmTask.quantity, q + 1))}
+                aria-label="Sumar un bulto"
+              >
+                +
+              </button>
+            </div>
+            <p className="mt-2 text-xs text-slate-500">Planificado: {confirmTask.quantity} bultos</p>
+          </div>
+        )}
+      </Modal>
+    </div>
+  );
+}
+
+function TaskRow({
+  task,
+  onConfirm,
+  disabled,
+}: {
+  task: PickTask;
+  onConfirm: () => void;
+  disabled: boolean;
+}) {
+  return (
+    <li className="flex items-center gap-3 rounded-xl border border-slate-700 bg-slate-800 p-3">
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-900 font-mono text-sm font-black text-amber-300">
+        {task.sequence}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="font-mono font-bold text-white">{task.location.code}</p>
+        <p className="truncate text-sm text-slate-300">
+          <strong>{task.quantity}</strong> × {task.productSku} {task.productName}
+        </p>
+        <p className="text-[11px] text-slate-500">
+          Mód. {task.location.module} · Nivel {task.location.level}
+          {task.location.comments ? ` · ${task.location.comments}` : ''}
+        </p>
+      </div>
+      <Button variant="success" onClick={onConfirm} disabled={disabled}>
+        ✓
+      </Button>
+    </li>
   );
 }

@@ -50,8 +50,47 @@ async function main() {
     },
   });
 
+  await prisma.user.upsert({
+    where: { email: 'gestor1@dshlogistica.com' },
+    update: {},
+    create: {
+      email: 'gestor1@dshlogistica.com',
+      password: hashedPassword,
+      firstName: 'Gestor',
+      lastName: 'Depósito 1',
+      role: UserRole.WAREHOUSE_MANAGER,
+      isActive: true,
+    },
+  });
+
+  await prisma.user.upsert({
+    where: { email: 'peon1@dshlogistica.com' },
+    update: {},
+    create: {
+      email: 'peon1@dshlogistica.com',
+      password: hashedPassword,
+      firstName: 'Peón',
+      lastName: 'Reparto 1',
+      role: UserRole.HELPER,
+      isActive: true,
+    },
+  });
+
+  await prisma.truck.upsert({
+    where: { plate: 'AB123CD' },
+    update: {},
+    create: {
+      brand: 'Mercedes-Benz',
+      model: 'Atego 1726',
+      plate: 'AB123CD',
+      capacityM3: 40,
+      maxLoadKg: 9000,
+      notes: 'Unidad de ejemplo (seed)',
+    },
+  });
+
   console.log(
-    '✅ 3 Usuarios creados con seguridad bcrypt (Admin, Picker, Driver).',
+    '✅ 5 usuarios (Admin, Gestor, Picker, Peón, Chofer) y 1 camión de ejemplo creados.',
   );
 
   // ==========================================

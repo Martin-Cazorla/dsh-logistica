@@ -1,112 +1,141 @@
+// dsh-logistica/src/inventory/services/occupation.service.ts
+
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   WarehouseOccupationDto,
   LocationOccupationDto,
 } from '../dto/occupation-response.dto';
 
+interface LocationUsageRow {
+  location_id: string;
+  current_bultos: number;
+}
+
+/**
+ * Ocupación por BULTOS (complementa la ocupación volumétrica en m³ de
+ * InventoryService#getOccupancySummary).
+ *
+ * Antes:
+ *  - getAllWarehousesOccupation hacía 1 + N consultas (una por depósito), cada
+ *    una cargando todas las filas de inventario.
+ * Ahora: 2 consultas en total, con la suma de bultos agregada en PostgreSQL.
+ *
+ * ATENCIÓN (deuda de modelo): `Location.capacity` se usa como m³ en
+ * InventoryService y en el frontend; este servicio lo compara contra bultos.
+ * Si se necesita capacidad en bultos, agregar un campo dedicado
+ * (p. ej. `maxBultos Int?`) en lugar de reutilizar `capacity`.
+ */
 @Injectable()
 export class OccupationService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /**
-   * Calcula el índice de ocupación física de un depósito específico
-   * sumando las capacidades máximas y la cantidad actual de bultos
-   * almacenados en sus ubicaciones.
-   */
   async getWarehouseOccupation(
     warehouseId: string,
   ): Promise<WarehouseOccupationDto> {
-    const warehouse = await this.prisma.warehouse.findUnique({
-      where: { id: warehouseId },
-      include: {
-        locations: {
-          include: {
-            inventories: true,
-          },
-        },
-      },
-    });
-
-    if (!warehouse) {
+    const [result] = await this.computeOccupation([warehouseId]);
+    if (!result) {
       throw new NotFoundException(
         `El depósito con ID "${warehouseId}" no fue encontrado.`,
       );
     }
-
-    let totalMaxCapacityBultos = 0;
-    let totalCurrentBultos = 0;
-
-    const locationsOccupation: LocationOccupationDto[] =
-      warehouse.locations.map((loc: any) => {
-        const currentBultos = loc.inventories.reduce(
-          (acc: number, inv: any) => acc + inv.quantity,
-          0,
-        );
-
-        // Mapeo seguro según la propiedad de capacidad en la DB (capacity o maxCapacity)
-        const maxCapacity =
-          loc.capacity ?? loc.maxCapacity ?? loc.maxCapacityBultos ?? 0;
-        const availableBultos = Math.max(0, maxCapacity - currentBultos);
-        const occupationPercentage =
-          maxCapacity > 0
-            ? Number(((currentBultos / maxCapacity) * 100).toFixed(2))
-            : 0;
-
-        totalMaxCapacityBultos += maxCapacity;
-        totalCurrentBultos += currentBultos;
-
-        return {
-          id: loc.id,
-          code: loc.code,
-          type: loc.type,
-          aisle: loc.aisle ?? null,
-          rack: loc.rack ?? null,
-          position: loc.position ?? null,
-          capacity: maxCapacity,
-          currentBultos: currentBultos,
-          occupationPercentage: occupationPercentage,
-          availableBultos: availableBultos,
-          isFull: currentBultos >= maxCapacity && maxCapacity > 0,
-        };
-      });
-
-    const globalOccupationPercentage =
-      totalMaxCapacityBultos > 0
-        ? Number(
-            ((totalCurrentBultos / totalMaxCapacityBultos) * 100).toFixed(2),
-          )
-        : 0;
-
-    const totalAvailableBultos = Math.max(
-      0,
-      totalMaxCapacityBultos - totalCurrentBultos,
-    );
-
-    return {
-      warehouseId: warehouse.id,
-      warehouseName: warehouse.name,
-      totalLocations: warehouse.locations.length,
-      totalMaxCapacityBultos: totalMaxCapacityBultos,
-      totalCurrentBultos: totalCurrentBultos,
-      totalAvailableBultos: totalAvailableBultos,
-      globalOccupationPercentage: globalOccupationPercentage,
-      locations: locationsOccupation,
-    };
+    return result;
   }
 
-  /**
-   * Obtiene la métrica consolidada de ocupación de todos los depósitos registrados.
-   */
   async getAllWarehousesOccupation(): Promise<WarehouseOccupationDto[]> {
-    const warehouses = await this.prisma.warehouse.findMany({
-      select: { id: true },
-    });
+    return this.computeOccupation();
+  }
 
-    const occupations = await Promise.all(
-      warehouses.map((w) => this.getWarehouseOccupation(w.id)),
+  private async computeOccupation(
+    warehouseIds?: string[],
+  ): Promise<WarehouseOccupationDto[]> {
+    const warehouseFilter = warehouseIds
+      ? Prisma.sql`AND i.warehouse_id = ANY(${warehouseIds}::uuid[])`
+      : Prisma.empty;
+
+    const [warehouses, usageRows] = await Promise.all([
+      this.prisma.warehouse.findMany({
+        where: warehouseIds ? { id: { in: warehouseIds } } : { isActive: true },
+        select: {
+          id: true,
+          name: true,
+          locations: {
+            select: {
+              id: true,
+              code: true,
+              type: true,
+              aisle: true,
+              rack: true,
+              position: true,
+              capacity: true,
+            },
+            orderBy: { code: 'asc' },
+          },
+        },
+        orderBy: { name: 'asc' },
+      }),
+      this.prisma.$queryRaw<LocationUsageRow[]>`
+        SELECT i.location_id, SUM(i.quantity)::int AS current_bultos
+        FROM inventories i
+        WHERE i.quantity > 0 ${warehouseFilter}
+        GROUP BY i.location_id
+      `,
+    ]);
+
+    const bultosByLocation = new Map(
+      usageRows.map((r) => [r.location_id, Number(r.current_bultos)]),
     );
 
-    return occupations;
+    return warehouses.map((warehouse) => {
+      let totalMaxCapacity = 0;
+      let totalCurrentBultos = 0;
+
+      const locations: LocationOccupationDto[] = warehouse.locations.map(
+        (loc) => {
+          const currentBultos = bultosByLocation.get(loc.id) ?? 0;
+          const maxCapacity = Number(loc.capacity);
+          const availableBultos = Math.max(0, maxCapacity - currentBultos);
+          const occupationPercentage =
+            maxCapacity > 0
+              ? Number(((currentBultos / maxCapacity) * 100).toFixed(2))
+              : 0;
+
+          totalMaxCapacity += maxCapacity;
+          totalCurrentBultos += currentBultos;
+
+          return {
+            id: loc.id,
+            code: loc.code,
+            type: loc.type,
+            aisle: loc.aisle ?? null,
+            rack: loc.rack ?? null,
+            position: loc.position ?? null,
+            capacity: maxCapacity,
+            currentBultos,
+            occupationPercentage,
+            availableBultos,
+            isFull: maxCapacity > 0 && currentBultos >= maxCapacity,
+          };
+        },
+      );
+
+      return {
+        warehouseId: warehouse.id,
+        warehouseName: warehouse.name,
+        totalLocations: warehouse.locations.length,
+        totalMaxCapacityBultos: totalMaxCapacity,
+        totalCurrentBultos,
+        totalAvailableBultos: Math.max(
+          0,
+          totalMaxCapacity - totalCurrentBultos,
+        ),
+        globalOccupationPercentage:
+          totalMaxCapacity > 0
+            ? Number(((totalCurrentBultos / totalMaxCapacity) * 100).toFixed(2))
+            : 0,
+        locations,
+      };
+    });
   }
 }

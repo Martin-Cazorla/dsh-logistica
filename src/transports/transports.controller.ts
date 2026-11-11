@@ -1,3 +1,5 @@
+// dsh-logistica/src/transports/transports.controller.ts
+
 import {
   Controller,
   Get,
@@ -6,10 +8,13 @@ import {
   Param,
   ParseUUIDPipe,
 } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
 import { TransportsService } from './transports.service';
 import { CreateTransportDto } from './dto/create-transport.dto';
+import { Roles } from '../auth/decorators/roles.decorator';
 
 @Controller('transports')
+@Roles(UserRole.ADMIN, UserRole.WAREHOUSE_MANAGER)
 export class TransportsController {
   constructor(private readonly transportsService: TransportsService) {}
 

@@ -1,8 +1,15 @@
+// dsh-logistica/src/auth/auth.service.ts
+
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
+import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { LoginDto } from './dto/login.dto';
+
+// Hash bcrypt de un valor aleatorio: se compara contra él cuando el email no
+// existe para que el tiempo de respuesta no revele qué cuentas existen.
+const DUMMY_BCRYPT_HASH = bcrypt.hashSync(randomUUID(), 10);
 
 @Injectable()
 export class AuthService {
@@ -12,25 +19,21 @@ export class AuthService {
   ) {}
 
   async login(loginDto: LoginDto) {
-    const { email, password } = loginDto;
+    const email = loginDto.email.trim();
+    const { password } = loginDto;
 
     const user = await this.prisma.user.findUnique({
       where: { email },
     });
 
-    if (!user) {
-      throw new UnauthorizedException('Credenciales inválidas.');
-    }
+    const isPasswordValid = await bcrypt.compare(
+      password,
+      user?.password ?? DUMMY_BCRYPT_HASH,
+    );
 
-    if (!user.isActive) {
-      throw new UnauthorizedException(
-        'La cuenta de usuario se encuentra inactiva. Contacte al administrador.',
-      );
-    }
-
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-
-    if (!isPasswordValid) {
+    // Mismo mensaje para "no existe", "inactivo" y "contraseña incorrecta":
+    // evita la enumeración de cuentas.
+    if (!user || !isPasswordValid || !user.isActive) {
       throw new UnauthorizedException('Credenciales inválidas.');
     }
 
@@ -40,7 +43,7 @@ export class AuthService {
       role: user.role,
     };
 
-    const token = this.jwtService.sign(payload);
+    const token = await this.jwtService.signAsync(payload);
 
     return {
       accessToken: token,
@@ -49,6 +52,7 @@ export class AuthService {
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
+        fullName: `${user.firstName} ${user.lastName}`.trim(),
         role: user.role,
       },
     };

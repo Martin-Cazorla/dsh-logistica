@@ -1,8 +1,14 @@
+// frontend/src/app/dashboard/layout.tsx
+
 import React from 'react';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import Header from '@/components/layout/Header';
 import Sidebar from '@/components/layout/Sidebar';
 
+/**
+ * /dashboard/* es el área de gestión (Administrador y Gestor). Cada página
+ * aplica además su permiso específico (p. ej. Usuarios sólo ADMIN).
+ */
 export default function DashboardLayout({
   children,
 }: {
@@ -14,7 +20,7 @@ export default function DashboardLayout({
         <Header />
         <div className="flex flex-1 flex-col md:flex-row">
           <Sidebar />
-          <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-y-auto">
+          <main className="min-w-0 flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
             {children}
           </main>
         </div>

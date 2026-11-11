@@ -3,29 +3,28 @@
 import api from '@/lib/axios';
 import { CheckingOrder, ConfirmCheckingDto } from '@/types/checking.types';
 
+/**
+ * Alineado con OrderCheckingController (antes apuntaba a /orders/checking/*,
+ * rutas inexistentes en el backend).
+ */
 export const checkingService = {
-  /**
-   * Obtiene la lista de pedidos en estado PICKED listos para control de calidad.
-   */
+  /** Pedidos en estado PICKED listos para control. */
   async getPickedOrders(): Promise<CheckingOrder[]> {
-    const response = await api.get<CheckingOrder[]>('/orders/checking/picked');
+    const response = await api.get<CheckingOrder[]>('/orders/check/pending');
     return response.data;
   },
 
-  /**
-   * Obtiene el detalle de un pedido específico para auditar.
-   */
   async getOrderForChecking(orderId: string): Promise<CheckingOrder> {
-    const response = await api.get<CheckingOrder>(
-      `/orders/checking/${orderId}`,
+    const response = await api.get<CheckingOrder>(`/orders/check/${orderId}`);
+    return response.data;
+  },
+
+  /** Confirma el control y transiciona el pedido a CHECKED. */
+  async confirmChecking(data: ConfirmCheckingDto): Promise<CheckingOrder> {
+    const response = await api.post<CheckingOrder>(
+      `/orders/check/${data.orderId}/verify`,
+      { notes: data.notes, itemsChecked: data.itemsChecked },
     );
     return response.data;
-  },
-
-  /**
-   * Confirma el control de calidad y transiciona el pedido a estado CHECKED.
-   */
-  async confirmChecking(data: ConfirmCheckingDto): Promise<void> {
-    await api.patch('/orders/checking/confirm', data);
   },
 };

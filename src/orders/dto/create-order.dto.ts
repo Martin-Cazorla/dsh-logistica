@@ -1,3 +1,5 @@
+// dsh-logistica/src/orders/dto/create-order.dto.ts
+
 import {
   IsArray,
   IsNotEmpty,
@@ -6,44 +8,57 @@ import {
   IsUUID,
   ValidateNested,
   ArrayMinSize,
+  ArrayMaxSize,
   IsInt,
   Min,
+  Max,
   IsEnum,
   IsDateString,
   IsNumber,
+  MaxLength,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { Currency, PaymentTerm } from '@prisma/client';
+import { Currency, OrderStatus, PaymentTerm } from '@prisma/client';
 
 export class CreateOrderItemDto {
   @IsUUID()
-  @IsNotEmpty()
   productId: string;
 
   @IsInt()
   @Min(1)
   bultos: number; // Cantidad de bultos pedidos
 
-  @IsNumber()
+  /**
+   * Módulo de Ventas (opcional). Se ignora mientras SALES_MODULE_ENABLED no
+   * sea 'true'.
+   */
   @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
   unitPrice?: number;
+
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Max(100)
+  discountPct?: number;
 }
 
 export class CreateOrderDto {
+  /** Si se omite, el sistema genera uno (PED-AAAAMMDD-XXXXXX). */
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
-  orderNumber: string; // Número único (Ej: Presupuesto 1900)
+  @MaxLength(50)
+  orderNumber?: string;
 
   @IsUUID()
-  @IsNotEmpty()
   customerId: string;
 
   @IsUUID()
-  @IsNotEmpty()
-  addressId: string; // Dirección elegida de las registradas para el cliente
+  addressId: string; // Dirección de entrega registrada del cliente
 
   @IsUUID()
-  @IsNotEmpty()
   sourceWarehouseId: string; // Depósito de origen
 
   @IsUUID()
@@ -52,15 +67,15 @@ export class CreateOrderDto {
 
   @IsUUID()
   @IsOptional()
-  transportId?: string; // Opcional para envíos por transporte externo
+  transportId?: string; // Envío por transporte externo
 
   @IsEnum(Currency)
-  @IsNotEmpty()
-  currency: Currency;
+  @IsOptional()
+  currency?: Currency;
 
   @IsEnum(PaymentTerm)
-  @IsNotEmpty()
-  paymentTerm: PaymentTerm;
+  @IsOptional()
+  paymentTerm?: PaymentTerm;
 
   @IsDateString()
   @IsOptional()
@@ -70,9 +85,53 @@ export class CreateOrderDto {
   @IsOptional()
   deliveryDateTo?: string;
 
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  notes?: string;
+
+  /** Módulo de Ventas (opcional): alícuota de impuesto sobre el subtotal. */
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Max(100)
+  taxPct?: number;
+
   @IsArray()
   @ArrayMinSize(1)
+  @ArrayMaxSize(300)
   @ValidateNested({ each: true })
   @Type(() => CreateOrderItemDto)
   items: CreateOrderItemDto[];
+}
+
+export class ListOrdersQueryDto {
+  @IsOptional()
+  @IsEnum(OrderStatus)
+  status?: OrderStatus;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  search?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  limit?: number;
+}
+
+export class CancelOrderDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(255)
+  reason: string;
 }

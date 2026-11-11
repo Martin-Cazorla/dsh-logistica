@@ -1,34 +1,19 @@
+// frontend/src/app/page.tsx
+
 'use client';
 
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
+import { homePathForRole } from '@/lib/roles';
 
 export default function HomePage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
-    if (!isLoading) {
-      if (!user) {
-        router.push('/login');
-      } else {
-        switch (user.role) {
-          case 'ADMIN':
-          case 'WAREHOUSE_MANAGER':
-            router.push('/dashboard');
-            break;
-          case 'PICKER':
-            router.push('/picking');
-            break;
-          case 'DRIVER':
-            router.push('/routes');
-            break;
-          default:
-            router.push('/login');
-        }
-      }
-    }
+    if (isLoading) return;
+    router.replace(user ? homePathForRole(user.role) : '/login');
   }, [user, isLoading, router]);
 
   return (

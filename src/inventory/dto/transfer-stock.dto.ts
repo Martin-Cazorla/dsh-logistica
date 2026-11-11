@@ -1,39 +1,40 @@
-import { IsString, IsNotEmpty, IsInt, Min, IsOptional } from 'class-validator';
+// dsh-logistica/src/inventory/dto/transfer-stock.dto.ts
 
+import {
+  IsUUID,
+  IsInt,
+  Min,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
+
+/**
+ * Reubicación de stock (misma ubicación de depósito o inter-depósito).
+ * Contrato alineado con frontend/src/services/inventory.service.ts#transferStock.
+ *
+ * Antes existía un TransferStockDto que el controlador NO usaba (recibía un
+ * tipo inline sin validación) y cuyos campos no coincidían con lo que enviaba
+ * el frontend.
+ */
 export class TransferStockDto {
-  @IsString()
+  @IsUUID()
+  inventoryId: string;
+
+  @IsUUID()
+  targetLocationId: string;
+
+  /** Ignorado: el depósito destino se deriva siempre de la ubicación destino. */
   @IsOptional()
-  inventoryId?: string;
-
-  @IsString()
-  @IsNotEmpty()
-  productId: string;
-
-  @IsString()
-  @IsNotEmpty()
-  originWarehouseId: string;
-
-  @IsString()
-  @IsNotEmpty()
-  originLocationId: string;
-
-  @IsString()
-  @IsNotEmpty()
-  destinationWarehouseId: string;
-
-  @IsString()
-  @IsNotEmpty()
-  destinationLocationId: string;
+  @IsUUID()
+  targetWarehouseId?: string;
 
   @IsInt()
   @Min(1)
-  quantity: number;
+  quantityBultos: number;
 
-  @IsString()
   @IsOptional()
+  @IsString()
+  @MaxLength(255)
   notes?: string;
-
-  @IsString()
-  @IsOptional()
-  userId?: string;
 }
