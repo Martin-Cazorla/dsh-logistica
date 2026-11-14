@@ -63,4 +63,6 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   CUSTOMER_CREATED: 'Cliente creado',
   CUSTOMER_UPDATED: 'Cliente modificado',
   CUSTOMER_DEACTIVATED: 'Cliente dado de baja',
+  ZONE_LOCALITY_ASSIGNED: 'Localidad asignada a zona',
+  ZONE_LOCALITY_REMOVED: 'Localidad quitada de zona',
 };

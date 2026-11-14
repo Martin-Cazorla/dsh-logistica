@@ -13,6 +13,8 @@ import { RoutesModule } from './routes/routes.module';
 import { UsersModule } from './users/users.module';
 import { TrucksModule } from './trucks/trucks.module';
 import { ProductsModule } from './products/products.module';
+import { SalesZonesModule } from './sales-zones/sales-zones.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
@@ -31,6 +33,8 @@ import { RolesGuard } from './auth/guards/roles.guard';
     TransportsModule,
     TrucksModule,
     RoutesModule,
+    SalesZonesModule,
+    AnalyticsModule,
   ],
   controllers: [AppController],
   providers: [

@@ -50,6 +50,10 @@ export const AuditAction = {
   CUSTOMER_CREATED: 'CUSTOMER_CREATED',
   CUSTOMER_UPDATED: 'CUSTOMER_UPDATED',
   CUSTOMER_DEACTIVATED: 'CUSTOMER_DEACTIVATED',
+
+  // Zonas comerciales
+  ZONE_LOCALITY_ASSIGNED: 'ZONE_LOCALITY_ASSIGNED',
+  ZONE_LOCALITY_REMOVED: 'ZONE_LOCALITY_REMOVED',
 } as const;
 
 export type AuditActionType = (typeof AuditAction)[keyof typeof AuditAction];
@@ -66,6 +70,7 @@ export const AuditEntity = {
   ROUTE: 'ROUTE',
   ROUTE_STOP: 'ROUTE_STOP',
   CUSTOMER: 'CUSTOMER',
+  SALES_ZONE: 'SALES_ZONE',
 } as const;
 
 export type AuditEntityType = (typeof AuditEntity)[keyof typeof AuditEntity];

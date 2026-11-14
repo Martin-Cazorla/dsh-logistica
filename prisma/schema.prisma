@@ -415,14 +415,63 @@ model CustomerAddress {
   isDefault     Boolean @default(false) @map("is_default")
   // Baja lógica: una dirección con pedidos asociados no se borra, se desactiva
   isActive      Boolean @default(true) @map("is_active")
+  // Zona comercial resuelta automáticamente por provincia + localidad
+  // (ZoneLocality). Null = "Sin zona asignada".
+  zoneId        String? @map("zone_id") @db.Uuid
 
-  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customer Customer   @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  zone     SalesZone? @relation(fields: [zoneId], references: [id], onDelete: SetNull)
   orders   Order[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  @@index([zoneId])
   @@map("customer_addresses")
+}
+
+// ==========================================
+// ZONAS COMERCIALES (Análisis de ventas por zona)
+// ==========================================
+
+/// Zona comercial dentro de una provincia (ej. Buenos Aires › Zona Norte).
+model SalesZone {
+  id        String  @id @default(uuid()) @db.Uuid
+  name      String  @db.VarChar(100)
+  // Provincia a la que pertenece la zona (nombre para mostrar, ej. "Buenos Aires")
+  province  String  @db.VarChar(100)
+  sortOrder Int     @default(0) @map("sort_order")
+  isActive  Boolean @default(true) @map("is_active")
+
+  localities ZoneLocality[]
+  addresses  CustomerAddress[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([province, name])
+  @@map("sales_zones")
+}
+
+/// Localidad asignada a una zona. province y locality se guardan
+/// NORMALIZADAS (minúsculas, sin acentos, sin espacios dobles; ver
+/// src/sales-zones/geo-normalize.ts) para comparar con las direcciones.
+model ZoneLocality {
+  id       String  @id @default(uuid()) @db.Uuid
+  zoneId   String  @map("zone_id") @db.Uuid
+  province String  @db.VarChar(100)
+  locality String  @db.VarChar(150)
+  // Nombre para mostrar (con mayúsculas y acentos)
+  label    String? @db.VarChar(150)
+
+  zone SalesZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([province, locality])
+  @@index([zoneId])
+  @@map("zone_localities")
 }
 
 // ==========================================

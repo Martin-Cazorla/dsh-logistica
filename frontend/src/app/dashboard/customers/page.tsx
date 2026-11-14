@@ -306,6 +306,11 @@ export default function CustomersPage() {
                             </div>
                             <div className="text-xs text-slate-500">
                               {c.addresses[0].province}
+                              <span
+                                className={`ml-2 ${c.addresses[0].zone ? 'text-slate-400' : 'italic text-slate-500'}`}
+                              >
+                                · {c.addresses[0].zone?.name ?? 'Sin zona asignada'}
+                              </span>
                               {c.addresses.length > 1 && (
                                 <span
                                   title={c.addresses
@@ -564,6 +569,17 @@ export default function CustomersPage() {
                               : 'Marcar como principal'}
                           </span>
                         </label>
+                        <span className="ml-auto text-[11px] text-slate-500">
+                          {(() => {
+                            if (!addr.id) return 'Zona: se asigna al guardar';
+                            const saved = selectedCustomer?.addresses.find(
+                              (a) => a.id === addr.id,
+                            );
+                            return saved?.zone
+                              ? `Zona: ${saved.zone.name}`
+                              : 'Sin zona asignada';
+                          })()}
+                        </span>
                         <button
                           type="button"
                           onClick={() => removeAddress(idx)}

@@ -18,6 +18,9 @@ export enum Permission {
   // Ventas / datos monetarios
   SALES_VIEW = 'SALES_VIEW',
 
+  // Análisis comercial (ventas por zona)
+  ANALYTICS_VIEW = 'ANALYTICS_VIEW',
+
   // Dashboard y auditoría
   DASHBOARD_VIEW = 'DASHBOARD_VIEW',
   AUDIT_VIEW = 'AUDIT_VIEW',

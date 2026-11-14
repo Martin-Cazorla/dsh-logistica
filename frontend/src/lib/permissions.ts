@@ -11,6 +11,7 @@ export type Permission =
   | 'USERS_VIEW'
   | 'USERS_MANAGE'
   | 'SALES_VIEW'
+  | 'ANALYTICS_VIEW'
   | 'DASHBOARD_VIEW'
   | 'AUDIT_VIEW'
   | 'ORDERS_VIEW'
@@ -35,6 +36,7 @@ const ALL: Permission[] = [
   'USERS_VIEW',
   'USERS_MANAGE',
   'SALES_VIEW',
+  'ANALYTICS_VIEW',
   'DASHBOARD_VIEW',
   'AUDIT_VIEW',
   'ORDERS_VIEW',

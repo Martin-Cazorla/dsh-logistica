@@ -23,6 +23,9 @@ export interface CustomerAddress {
   businessHours?: string | null;
   isDefault?: boolean;
   isActive?: boolean;
+  /** Zona comercial resuelta por provincia + localidad (null = sin zona). */
+  zoneId?: string | null;
+  zone?: { id: string; name: string } | null;
 }
 
 export interface Customer {

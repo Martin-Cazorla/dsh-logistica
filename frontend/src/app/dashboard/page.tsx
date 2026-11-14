@@ -8,6 +8,8 @@ import { useAuth } from '@/context/AuthContext';
 import { routesService } from '@/services/routes.service';
 import { inventoryService } from '@/services/inventory.service';
 import { getApiErrorMessage } from '@/lib/axios';
+import { can } from '@/lib/permissions';
+import TopZonesCard from '@/components/TopZonesCard';
 import { formatMinutes, formatNumber } from '@/lib/format';
 import { DashboardMetrics, ROUTE_STATUS_LABELS, RouteStatus } from '@/types/routes.types';
 import { ORDER_STATUS_LABELS, OrderStatus } from '@/types/picking.types';
@@ -198,6 +200,8 @@ export default function DashboardPage() {
               )}
             </Card>
           </div>
+
+          {can(user?.role, 'ANALYTICS_VIEW') && <TopZonesCard />}
 
           <Card title="Accesos rápidos">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">

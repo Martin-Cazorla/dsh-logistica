@@ -13,12 +13,14 @@ import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interfa
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
 import { CreateCustomerAddressDto } from './dto/create-customer-address.dto';
+import { SalesZonesService } from '../sales-zones/sales-zones.service';
 import { Prisma } from '@prisma/client';
 
 /** Sólo direcciones activas, con la principal primero. */
 const ACTIVE_ADDRESSES = {
   where: { isActive: true },
   orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
+  include: { zone: { select: { id: true, name: true } } },
 } satisfies Prisma.Customer$addressesArgs;
 
 type AddressData = Omit<CreateCustomerAddressDto, 'id'>;
@@ -28,6 +30,7 @@ export class CustomersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly salesZones: SalesZonesService,
   ) {}
 
   /**
@@ -55,9 +58,18 @@ export class CustomersService {
     }));
   }
 
-  private toAddressData(addr: CreateCustomerAddressDto): AddressData {
+  /** Datos de la dirección + zona comercial resuelta por provincia/localidad. */
+  private async toAddressData(
+    addr: CreateCustomerAddressDto,
+    db?: Prisma.TransactionClient,
+  ): Promise<AddressData & { zoneId: string | null }> {
     const { id: _id, ...data } = addr;
-    return data;
+    const zoneId = await this.salesZones.resolveZoneId(
+      data.province,
+      data.city,
+      db,
+    );
+    return { ...data, zoneId };
   }
 
   private rethrow(error: unknown, fallback: string): never {
@@ -101,7 +113,9 @@ export class CustomersService {
           data: {
             ...customerData,
             addresses: {
-              create: addresses.map((a) => this.toAddressData(a)),
+              create: await Promise.all(
+                addresses.map((a) => this.toAddressData(a, tx)),
+              ),
             },
           },
           include: {
@@ -278,7 +292,7 @@ export class CustomersService {
           }
 
           for (const addr of addresses) {
-            const data = this.toAddressData(addr);
+            const data = await this.toAddressData(addr, tx);
             if (addr.id) {
               await tx.customerAddress.update({
                 where: { id: addr.id },

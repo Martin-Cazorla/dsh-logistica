@@ -1,5 +1,6 @@
 import { PrismaClient, UserRole, LocationType } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+import { seedSalesZones } from '../src/sales-zones/sales-zones.seed';
 
 const prisma = new PrismaClient();
 
@@ -232,6 +233,12 @@ async function main() {
 
     console.log('✅ Producto US582 e Inventario inicial cargados en Chile 1.');
   }
+
+  // ==========================================
+  // ZONAS COMERCIALES (Análisis de ventas por zona)
+  // ==========================================
+  const zones = await seedSalesZones(prisma);
+  console.log(`✅ Zonas comerciales: ${zones.zones} zonas, ${zones.localitiesCreated} localidades nuevas.`);
 
   console.log('🚀 Seeding completado exitosamente.');
 }
