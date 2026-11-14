@@ -2,7 +2,11 @@
 
 export type LocationTypeCategory = 'RACK' | 'PASILLO' | 'TECHO';
 export type LocationStatus =
-  'DISPONIBLE' | 'PARCIAL' | 'COMPLETO' | 'SOBREEXIGIDO';
+  | 'SIN_CAPACIDAD'
+  | 'DISPONIBLE'
+  | 'PARCIAL'
+  | 'COMPLETO'
+  | 'SOBREEXIGIDO';
 
 // Estructura para componentes de combos (SKU Hijo)
 export interface ComboComponent {
@@ -20,9 +24,15 @@ export interface PhysicalLocation {
   zoneName: string;
   rackLevel?: string;
   moduleNumber?: number;
-  maxCapacityM3: number;
+  /** Medidas internas (m). null si no se cargaron. */
+  lengthM?: number | null;
+  widthM?: number | null;
+  heightM?: number | null;
+  /** false = "Sin capacidad cargada" (maxCapacityM3 y occupancyPercentage en null). */
+  hasCapacity: boolean;
+  maxCapacityM3: number | null;
   usedCapacityM3: number;
-  occupancyPercentage: number;
+  occupancyPercentage: number | null;
   status: LocationStatus;
   comments?: string;
 }
@@ -31,12 +41,16 @@ export interface WarehouseOccupancy {
   id: string;
   name: string;
   address?: string;
+  /** Suma de capacidades de ubicaciones con capacidad cargada. */
   totalCapacityM3: number;
   usedCapacityM3: number;
-  occupancyPercentage: number;
+  /** m³ almacenados en ubicaciones sin capacidad cargada (fuera del %). */
+  unmeasuredUsedM3: number;
+  occupancyPercentage: number | null;
   isOverloaded: boolean;
   totalLocations: number;
   occupiedLocations: number;
+  locationsWithoutCapacity: number;
   locations: PhysicalLocation[];
 }
 
@@ -125,7 +139,11 @@ export interface GenerateBatchLocationsDto {
   levels: string[];
   positionStart: number;
   positionEnd: number;
-  maxCapacityM3PerUnit: number;
+  /** m³ directos por posición (si no se envían las tres medidas). */
+  maxCapacityM3PerUnit?: number;
+  lengthM?: number;
+  widthM?: number;
+  heightM?: number;
 }
 
 // Alias para mantener compatibilidad con el servicio de inventario

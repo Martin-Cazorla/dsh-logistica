@@ -7,6 +7,7 @@ import {
   IsInt,
   IsEnum,
   IsUUID,
+  IsOptional,
   Min,
   Max,
   ArrayNotEmpty,
@@ -14,12 +15,19 @@ import {
   MaxLength,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
+import { toDecimalNumber } from '../../common/decimal-transform';
+import {
+  MAX_CAPACITY_M3,
+  MAX_DIMENSION_M,
+} from '../occupancy/location-occupancy';
 
 export enum LocationCategory {
   RACK = 'RACK',
   PASILLO = 'PASILLO',
   TECHO = 'TECHO',
 }
+
+const DECIMALS_3 = { maxDecimalPlaces: 3 };
 
 export class GenerateBatchLocationsDto {
   @IsUUID()
@@ -49,11 +57,41 @@ export class GenerateBatchLocationsDto {
   @Max(9999)
   positionEnd: number;
 
-  /** Acepta "2,5" o 2.5 (el frontend envía string o number). */
-  @Transform(({ value }) =>
-    typeof value === 'string' ? parseFloat(value.replace(',', '.')) : value,
-  )
-  @IsNumber()
-  @Min(0)
-  maxCapacityM3PerUnit: number;
+  /**
+   * Capacidad directa en m³ por posición (acepta "1,25" o 1.25). Opcional si
+   * se envían las tres medidas: en ese caso se calcula largo × ancho × alto.
+   */
+  @IsOptional()
+  @Transform(toDecimalNumber)
+  @IsNumber(DECIMALS_3, { message: 'La capacidad admite hasta 3 decimales.' })
+  @Min(0.001, { message: 'La capacidad debe ser mayor a 0.' })
+  @Max(MAX_CAPACITY_M3)
+  maxCapacityM3PerUnit?: number;
+
+  @IsOptional()
+  @Transform(toDecimalNumber)
+  @IsNumber(DECIMALS_3, { message: 'El largo admite hasta 3 decimales.' })
+  @Min(0.001, { message: 'El largo debe ser mayor a 0.' })
+  @Max(MAX_DIMENSION_M, {
+    message: `El largo no puede superar ${MAX_DIMENSION_M} m.`,
+  })
+  lengthM?: number;
+
+  @IsOptional()
+  @Transform(toDecimalNumber)
+  @IsNumber(DECIMALS_3, { message: 'El ancho admite hasta 3 decimales.' })
+  @Min(0.001, { message: 'El ancho debe ser mayor a 0.' })
+  @Max(MAX_DIMENSION_M, {
+    message: `El ancho no puede superar ${MAX_DIMENSION_M} m.`,
+  })
+  widthM?: number;
+
+  @IsOptional()
+  @Transform(toDecimalNumber)
+  @IsNumber(DECIMALS_3, { message: 'El alto admite hasta 3 decimales.' })
+  @Min(0.001, { message: 'El alto debe ser mayor a 0.' })
+  @Max(MAX_DIMENSION_M, {
+    message: `El alto no puede superar ${MAX_DIMENSION_M} m.`,
+  })
+  heightM?: number;
 }

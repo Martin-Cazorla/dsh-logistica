@@ -1,31 +1,26 @@
 // dsh-logistica/src/inventory/services/occupation.service.ts
 
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   WarehouseOccupationDto,
   LocationOccupationDto,
 } from '../dto/occupation-response.dto';
-
-interface LocationUsageRow {
-  location_id: string;
-  current_bultos: number;
-}
+import {
+  computeLocationOccupancy,
+  fetchUsedM3ByLocation,
+  roundM3,
+  summarizeOccupancy,
+} from '../occupancy/location-occupancy';
 
 /**
- * Ocupación por BULTOS (complementa la ocupación volumétrica en m³ de
- * InventoryService#getOccupancySummary).
+ * Ocupación de depósitos en m³ (GET /inventory/occupation).
  *
- * Antes:
- *  - getAllWarehousesOccupation hacía 1 + N consultas (una por depósito), cada
- *    una cargando todas las filas de inventario.
- * Ahora: 2 consultas en total, con la suma de bultos agregada en PostgreSQL.
- *
- * ATENCIÓN (deuda de modelo): `Location.capacity` se usa como m³ en
- * InventoryService y en el frontend; este servicio lo compara contra bultos.
- * Si se necesita capacidad en bultos, agregar un campo dedicado
- * (p. ej. `maxBultos Int?`) en lugar de reutilizar `capacity`.
+ * Corrección: antes comparaba `capacity` (m³) contra la cantidad de BULTOS
+ * (currentBultos / capacity), mezclando unidades. Ahora usa exactamente el
+ * mismo cálculo que InventoryService (src/inventory/occupancy/
+ * location-occupancy.ts): volumen ocupado = Σ bultos × volumen unitario del
+ * producto, sobre la capacidad en m³ de la ubicación.
  */
 @Injectable()
 export class OccupationService {
@@ -50,11 +45,7 @@ export class OccupationService {
   private async computeOccupation(
     warehouseIds?: string[],
   ): Promise<WarehouseOccupationDto[]> {
-    const warehouseFilter = warehouseIds
-      ? Prisma.sql`AND i.warehouse_id = ANY(${warehouseIds}::uuid[])`
-      : Prisma.empty;
-
-    const [warehouses, usageRows] = await Promise.all([
+    const [warehouses, usedByLocation, bultosRows] = await Promise.all([
       this.prisma.warehouse.findMany({
         where: warehouseIds ? { id: { in: warehouseIds } } : { isActive: true },
         select: {
@@ -69,41 +60,37 @@ export class OccupationService {
               rack: true,
               position: true,
               capacity: true,
+              lengthM: true,
+              widthM: true,
+              heightM: true,
             },
             orderBy: { code: 'asc' },
           },
         },
         orderBy: { name: 'asc' },
       }),
-      this.prisma.$queryRaw<LocationUsageRow[]>`
-        SELECT i.location_id, SUM(i.quantity)::int AS current_bultos
-        FROM inventories i
-        WHERE i.quantity > 0 ${warehouseFilter}
-        GROUP BY i.location_id
-      `,
+      fetchUsedM3ByLocation(this.prisma, warehouseIds),
+      this.prisma.inventory.groupBy({
+        by: ['locationId'],
+        where: {
+          quantity: { gt: 0 },
+          ...(warehouseIds ? { warehouseId: { in: warehouseIds } } : {}),
+        },
+        _sum: { quantity: true },
+      }),
     ]);
 
     const bultosByLocation = new Map(
-      usageRows.map((r) => [r.location_id, Number(r.current_bultos)]),
+      bultosRows.map((r) => [r.locationId, r._sum.quantity ?? 0]),
     );
 
     return warehouses.map((warehouse) => {
-      let totalMaxCapacity = 0;
-      let totalCurrentBultos = 0;
-
       const locations: LocationOccupationDto[] = warehouse.locations.map(
         (loc) => {
-          const currentBultos = bultosByLocation.get(loc.id) ?? 0;
-          const maxCapacity = Number(loc.capacity);
-          const availableBultos = Math.max(0, maxCapacity - currentBultos);
-          const occupationPercentage =
-            maxCapacity > 0
-              ? Number(((currentBultos / maxCapacity) * 100).toFixed(2))
-              : 0;
-
-          totalMaxCapacity += maxCapacity;
-          totalCurrentBultos += currentBultos;
-
+          const occ = computeLocationOccupancy(
+            loc.capacity,
+            usedByLocation.get(loc.id) ?? 0,
+          );
           return {
             id: loc.id,
             code: loc.code,
@@ -111,29 +98,33 @@ export class OccupationService {
             aisle: loc.aisle ?? null,
             rack: loc.rack ?? null,
             position: loc.position ?? null,
-            capacity: maxCapacity,
-            currentBultos,
-            occupationPercentage,
-            availableBultos,
-            isFull: maxCapacity > 0 && currentBultos >= maxCapacity,
+            lengthM: loc.lengthM === null ? null : Number(loc.lengthM),
+            widthM: loc.widthM === null ? null : Number(loc.widthM),
+            heightM: loc.heightM === null ? null : Number(loc.heightM),
+            ...occ,
+            availableM3: occ.hasCapacity
+              ? roundM3(Math.max(0, occ.maxCapacityM3! - occ.usedCapacityM3))
+              : null,
+            currentBultos: bultosByLocation.get(loc.id) ?? 0,
+            isFull: occ.hasCapacity && (occ.occupancyPercentage ?? 0) >= 100,
           };
         },
       );
 
+      const totals = summarizeOccupancy(locations);
+
       return {
         warehouseId: warehouse.id,
         warehouseName: warehouse.name,
-        totalLocations: warehouse.locations.length,
-        totalMaxCapacityBultos: totalMaxCapacity,
-        totalCurrentBultos,
-        totalAvailableBultos: Math.max(
-          0,
-          totalMaxCapacity - totalCurrentBultos,
+        totalLocations: locations.length,
+        locationsWithoutCapacity: totals.locationsWithoutCapacity,
+        totalCapacityM3: totals.totalCapacityM3,
+        usedCapacityM3: totals.usedCapacityM3,
+        unmeasuredUsedM3: totals.unmeasuredUsedM3,
+        availableM3: roundM3(
+          Math.max(0, totals.totalCapacityM3 - totals.usedCapacityM3),
         ),
-        globalOccupationPercentage:
-          totalMaxCapacity > 0
-            ? Number(((totalCurrentBultos / totalMaxCapacity) * 100).toFixed(2))
-            : 0,
+        occupancyPercentage: totals.occupancyPercentage,
         locations,
       };
     });

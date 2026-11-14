@@ -19,13 +19,18 @@ import { InventoryGateway } from './inventory.gateway';
 import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import { AuditService } from '../audit/audit.service';
 import { AuditAction, AuditEntity } from '../audit/audit.actions';
+import {
+  computeLocationOccupancy,
+  fetchUsedM3ByLocation,
+  resolveCapacity,
+  summarizeOccupancy,
+} from './occupancy/location-occupancy';
 
 type Tx = Prisma.TransactionClient;
 
 /** Valor centinela de lote (Inventory.lotNumber es NOT NULL). */
 export const NO_LOT = 'SIN_LOTE';
 const MANUAL_LOT = 'CARGA_MANUAL';
-const DEFAULT_LOCATION_CAPACITY_M3 = 10;
 const MAX_BATCH_LOCATIONS = 5000;
 const RACK_LEVELS = ['A', 'B', 'C', 'D', 'E'];
 
@@ -37,6 +42,9 @@ interface LocationRow {
   rack: string;
   position: string;
   capacity: Prisma.Decimal;
+  lengthM: Prisma.Decimal | null;
+  widthM: Prisma.Decimal | null;
+  heightM: Prisma.Decimal | null;
   notes: string | null;
 }
 
@@ -62,6 +70,9 @@ const LOCATION_SELECT = {
   rack: true,
   position: true,
   capacity: true,
+  lengthM: true,
+  widthM: true,
+  heightM: true,
   notes: true,
 } satisfies Prisma.LocationSelect;
 
@@ -84,7 +95,7 @@ export class InventoryService {
    * agrega en PostgreSQL con un único GROUP BY.
    */
   async getOccupancySummary() {
-    const [warehouses, usageRows] = await Promise.all([
+    const [warehouses, usedByLocation] = await Promise.all([
       this.prisma.warehouse.findMany({
         where: { isActive: true },
         select: {
@@ -95,46 +106,27 @@ export class InventoryService {
         },
         orderBy: { name: 'asc' },
       }),
-      this.prisma.$queryRaw<Array<{ location_id: string; used_m3: number }>>`
-        SELECT i.location_id, SUM(i.quantity * p.volume_m3)::float8 AS used_m3
-        FROM inventories i
-        JOIN products p ON p.id = i.product_id
-        WHERE i.quantity > 0
-        GROUP BY i.location_id
-      `,
+      fetchUsedM3ByLocation(this.prisma),
     ]);
 
-    const usedByLocation = new Map(
-      usageRows.map((r) => [r.location_id, Number(r.used_m3) || 0]),
-    );
-
     return warehouses.map((wh) => {
-      let totalCapacityM3 = 0;
-      let usedCapacityM3 = 0;
-
-      const mappedLocations = wh.locations.map((loc) => {
-        const view = this.toLocationView(loc, usedByLocation.get(loc.id) ?? 0);
-        totalCapacityM3 += view.maxCapacityM3;
-        usedCapacityM3 += view.usedCapacityM3;
-        return view;
-      });
-
-      const occupancyPercentage =
-        totalCapacityM3 > 0
-          ? Math.round((usedCapacityM3 / totalCapacityM3) * 100)
-          : 0;
+      const mappedLocations = wh.locations.map((loc) =>
+        this.toLocationView(loc, usedByLocation.get(loc.id) ?? 0),
+      );
+      const totals = summarizeOccupancy(mappedLocations);
 
       return {
         id: wh.id,
         name: wh.name,
         address: wh.address,
-        totalCapacityM3: Number(totalCapacityM3.toFixed(2)),
-        usedCapacityM3: Number(usedCapacityM3.toFixed(2)),
-        occupancyPercentage,
-        isOverloaded: occupancyPercentage > 100,
+        totalCapacityM3: totals.totalCapacityM3,
+        usedCapacityM3: totals.usedCapacityM3,
+        unmeasuredUsedM3: totals.unmeasuredUsedM3,
+        occupancyPercentage: totals.occupancyPercentage,
+        isOverloaded: (totals.occupancyPercentage ?? 0) > 100,
         totalLocations: mappedLocations.length,
-        occupiedLocations: mappedLocations.filter((l) => l.usedCapacityM3 > 0)
-          .length,
+        occupiedLocations: totals.occupiedLocations,
+        locationsWithoutCapacity: totals.locationsWithoutCapacity,
         locations: mappedLocations,
       };
     });
@@ -247,12 +239,17 @@ export class InventoryService {
   // ===========================================================================
 
   async getLocationsByWarehouse(warehouseId: string) {
-    const locations = await this.prisma.location.findMany({
-      where: { warehouseId },
-      select: LOCATION_SELECT,
-      orderBy: { code: 'asc' },
-    });
-    return locations.map((loc) => this.toLocationView(loc, 0));
+    const [locations, usedByLocation] = await Promise.all([
+      this.prisma.location.findMany({
+        where: { warehouseId },
+        select: LOCATION_SELECT,
+        orderBy: { code: 'asc' },
+      }),
+      fetchUsedM3ByLocation(this.prisma, [warehouseId]),
+    ]);
+    return locations.map((loc) =>
+      this.toLocationView(loc, usedByLocation.get(loc.id) ?? 0),
+    );
   }
 
   async generateLocationsBatch(dto: GenerateBatchLocationsDto) {
@@ -263,7 +260,6 @@ export class InventoryService {
       levels,
       positionStart,
       positionEnd,
-      maxCapacityM3PerUnit,
     } = dto;
 
     if (positionEnd < positionStart) {
@@ -289,9 +285,14 @@ export class InventoryService {
       .trim()
       .replace(/\s+/g, '-')
       .toUpperCase();
-    const capacity = new Prisma.Decimal(
-      maxCapacityM3PerUnit > 0 ? maxCapacityM3PerUnit : 2.5,
-    );
+    // Capacidad por medidas (L × A × H) o m³ directo; sin valores por defecto
+    // inventados (antes 2,5 m³ si venía vacío).
+    const resolved = resolveCapacity({
+      capacityM3: dto.maxCapacityM3PerUnit,
+      lengthM: dto.lengthM,
+      widthM: dto.widthM,
+      heightM: dto.heightM,
+    });
 
     const locationsToCreate: Prisma.LocationCreateManyInput[] = [];
     for (const rawLevel of levels) {
@@ -303,7 +304,10 @@ export class InventoryService {
           aisle: areaName?.trim() || 'General',
           rack: level,
           position: String(pos),
-          capacity,
+          capacity: resolved.capacity,
+          lengthM: resolved.lengthM,
+          widthM: resolved.widthM,
+          heightM: resolved.heightM,
         });
       }
     }
@@ -318,11 +322,27 @@ export class InventoryService {
   }
 
   async updateLocationsCapacity(updates: LocationCapacityUpdateDto[]) {
+    // Se valida TODO antes de escribir: un error en una fila no deja el lote a medias.
+    const resolved = updates.map((u) => ({
+      id: u.id,
+      ...resolveCapacity({
+        capacityM3: u.capacity,
+        lengthM: u.lengthM,
+        widthM: u.widthM,
+        heightM: u.heightM,
+      }),
+    }));
+
     const results = await this.prisma.$transaction(
-      updates.map((u) =>
+      resolved.map((u) =>
         this.prisma.location.update({
           where: { id: u.id },
-          data: { capacity: new Prisma.Decimal(u.capacity) },
+          data: {
+            capacity: u.capacity,
+            lengthM: u.lengthM,
+            widthM: u.widthM,
+            heightM: u.heightM,
+          },
           select: { id: true, warehouseId: true },
         }),
       ),
@@ -1299,15 +1319,7 @@ export class InventoryService {
   // ===========================================================================
 
   private toLocationView(loc: LocationRow, usedM3: number) {
-    const capacity = Number(loc.capacity);
-    const maxCapacityM3 =
-      capacity > 0 ? capacity : DEFAULT_LOCATION_CAPACITY_M3;
-    const occupancyPercentage =
-      maxCapacityM3 > 0 ? Math.round((usedM3 / maxCapacityM3) * 100) : 0;
-
-    let status = 'DISPONIBLE';
-    if (occupancyPercentage >= 90) status = 'COMPLETO';
-    else if (occupancyPercentage >= 50) status = 'PARCIAL';
+    const occupancy = computeLocationOccupancy(loc.capacity, usedM3);
 
     const isRack = !!loc.rack && RACK_LEVELS.includes(loc.rack.toUpperCase());
     const isTecho =
@@ -1322,10 +1334,10 @@ export class InventoryService {
       zoneName: loc.aisle || loc.notes || 'Zona General',
       rackLevel: loc.rack || 'A',
       moduleNumber: loc.position ? parseInt(loc.position, 10) || 1 : 1,
-      maxCapacityM3,
-      usedCapacityM3: Number(usedM3.toFixed(2)),
-      occupancyPercentage,
-      status,
+      lengthM: loc.lengthM === null ? null : Number(loc.lengthM),
+      widthM: loc.widthM === null ? null : Number(loc.widthM),
+      heightM: loc.heightM === null ? null : Number(loc.heightM),
+      ...occupancy,
       comments: loc.notes || undefined,
     };
   }

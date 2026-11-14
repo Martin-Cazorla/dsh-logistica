@@ -84,7 +84,13 @@ export const inventoryService = {
   },
 
   async updateLocationsCapacity(
-    updates: Array<{ id: string; capacity: number }>,
+    updates: Array<{
+      id: string;
+      capacity?: number;
+      lengthM?: number;
+      widthM?: number;
+      heightM?: number;
+    }>,
   ) {
     const response = await api.put('/inventory/locations/capacity', {
       updates,

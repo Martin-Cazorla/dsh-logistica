@@ -187,13 +187,20 @@ export default function DashboardPage() {
                       <div className="mb-1 flex justify-between text-sm">
                         <span className="text-slate-300">{wh.name}</span>
                         <span className="font-bold tabular-nums text-white">
-                          {wh.occupancyPercentage}%
+                          {wh.occupancyPercentage === null
+                            ? 'Sin capacidad'
+                            : `${formatNumber(wh.occupancyPercentage, 1)}%`}
                           <span className="ml-1 text-xs font-normal text-slate-500">
-                            ({formatNumber(wh.usedCapacityM3, 1)} / {formatNumber(wh.totalCapacityM3, 1)})
+                            ({formatNumber(wh.usedCapacityM3, 2)} / {formatNumber(wh.totalCapacityM3, 2)} m³)
                           </span>
                         </span>
                       </div>
                       <ProgressBar value={wh.usedCapacityM3} max={wh.totalCapacityM3} danger={95} />
+                      {wh.locationsWithoutCapacity > 0 && (
+                        <p className="mt-1 text-[11px] text-red-300">
+                          {wh.locationsWithoutCapacity} ubicaciones sin capacidad cargada
+                        </p>
+                      )}
                     </li>
                   ))}
                 </ul>

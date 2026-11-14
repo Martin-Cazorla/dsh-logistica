@@ -15,6 +15,12 @@ import PalletLabelModal from '@/components/PalletLabelModal';
 import { io, Socket } from 'socket.io-client';
 import { useAuth } from '@/context/AuthContext';
 import { SOCKET_URL } from '@/lib/axios';
+import CapacityFields, {
+  CapacityDraft,
+  EMPTY_CAPACITY_DRAFT,
+  resolveCapacityDraft,
+} from '@/components/inventory/CapacityFields';
+import { formatM3, toInputText } from '@/lib/decimal';
 import {
   WarehouseOccupancy,
   InventoryStock,
@@ -146,7 +152,7 @@ export default function InventoryPage() {
   >(null);
   const [mallaZoneFilter, setMallaZoneFilter] = useState<string>('ALL');
   const [mallaStatusFilter, setMallaStatusFilter] = useState<
-    'ALL' | 'FULL' | 'PARTIAL' | 'EMPTY'
+    'ALL' | 'FULL' | 'PARTIAL' | 'EMPTY' | 'NO_CAPACITY'
   >('ALL');
   const [mallaCodeSearch, setMallaCodeSearch] = useState<string>('');
 
@@ -284,13 +290,14 @@ export default function InventoryPage() {
   const [genLevelsInput, setGenLevelsInput] = useState<string>('A, B, C');
   const [genPosStart, setGenPosStart] = useState<number>(1);
   const [genPosEnd, setGenPosEnd] = useState<number>(84);
-  const [genCapacityM3, setGenCapacityM3] = useState<number>(1.8);
+  const [genCapacity, setGenCapacity] =
+    useState<CapacityDraft>(EMPTY_CAPACITY_DRAFT);
 
   const [selectedLocIdsForDelete, setSelectedLocIdsForDelete] = useState<
     string[]
   >([]);
   const [editedCapacities, setEditedCapacities] = useState<
-    Record<string, number>
+    Record<string, CapacityDraft>
   >({});
   const [submitting, setSubmitting] = useState<boolean>(false);
 
@@ -838,8 +845,6 @@ export default function InventoryPage() {
     if (!selectedMallaWarehouse) return [];
 
     return selectedMallaWarehouse.locations.map((loc) => {
-      const locWithOccupied = loc as PhysicalLocation & { occupiedM3?: number };
-
       const stockInLoc = stockList.filter(
         (st) =>
           st.locationId === loc.id &&
@@ -852,24 +857,19 @@ export default function InventoryPage() {
         0,
       );
 
-      const maxM3 = Number(loc.maxCapacityM3) || 1.8;
-      const occupiedM3 =
-        locWithOccupied.occupiedM3 !== undefined
-          ? Number(locWithOccupied.occupiedM3)
-          : stockInLoc.length > 0
-            ? Math.min(maxM3, totalBultosLoc * 0.036)
-            : 0;
-
-      const occupancyPercentage = Math.min(
-        100,
-        Math.round((occupiedM3 / maxM3) * 100),
-      );
+      // Capacidad, m³ ocupados y % vienen del backend (mismo cálculo que el
+      // dashboard). Antes se asumía 1,8 m³ si faltaba la capacidad y se
+      // estimaba el volumen como bultos × 0,036, ocultando ubicaciones sin
+      // capacidad cargada y mostrando porcentajes distintos al resto.
+      const occupiedM3 = Number(loc.usedCapacityM3) || 0;
+      const occupancyPercentage = loc.hasCapacity
+        ? (loc.occupancyPercentage ?? 0)
+        : null;
 
       return {
         ...loc,
         totalBultosLoc,
         occupiedM3,
-        maxCapacityM3: maxM3,
         occupancyPercentage,
         storedProducts: stockInLoc.map((s: InventoryStock) => ({
           sku: s.productSku,
@@ -894,13 +894,15 @@ export default function InventoryPage() {
         );
 
       let matchesStatus = true;
-      if (mallaStatusFilter === 'FULL') {
-        matchesStatus = loc.occupancyPercentage >= 90;
+      const pctValue = loc.occupancyPercentage;
+      if (mallaStatusFilter === 'NO_CAPACITY') {
+        matchesStatus = pctValue === null;
+      } else if (mallaStatusFilter === 'FULL') {
+        matchesStatus = pctValue !== null && pctValue >= 90;
       } else if (mallaStatusFilter === 'PARTIAL') {
-        matchesStatus =
-          loc.occupancyPercentage > 0 && loc.occupancyPercentage < 90;
+        matchesStatus = pctValue !== null && pctValue > 0 && pctValue < 90;
       } else if (mallaStatusFilter === 'EMPTY') {
-        matchesStatus = loc.occupancyPercentage === 0;
+        matchesStatus = pctValue === 0;
       }
 
       return matchesZone && matchesSearch && matchesStatus;
@@ -914,15 +916,18 @@ export default function InventoryPage() {
 
   const mallaStats = useMemo(() => {
     if (processedMallaLocations.length === 0)
-      return { total: 0, full: 0, partial: 0, empty: 0 };
+      return { total: 0, full: 0, partial: 0, empty: 0, noCapacity: 0 };
 
     let full = 0;
     let partial = 0;
     let empty = 0;
+    let noCapacity = 0;
 
     processedMallaLocations.forEach((loc) => {
-      if (loc.occupancyPercentage >= 90) full++;
-      else if (loc.occupancyPercentage > 0) partial++;
+      const pctValue = loc.occupancyPercentage;
+      if (pctValue === null) noCapacity++;
+      else if (pctValue >= 90) full++;
+      else if (pctValue > 0) partial++;
       else empty++;
     });
 
@@ -931,6 +936,7 @@ export default function InventoryPage() {
       full,
       partial,
       empty,
+      noCapacity,
     };
   }, [processedMallaLocations]);
 
@@ -1691,6 +1697,15 @@ export default function InventoryPage() {
       .map((l) => l.trim().toUpperCase())
       .filter(Boolean);
 
+    const genResolved = resolveCapacityDraft(genCapacity);
+    if (genResolved.error || !genResolved.payload) {
+      setErrorMsg(
+        genResolved.error ??
+          'Cargue las medidas o la capacidad en m³ de las posiciones.',
+      );
+      return;
+    }
+
     setSubmitting(true);
     try {
       await inventoryService.generateBatchLocations({
@@ -1700,7 +1715,13 @@ export default function InventoryPage() {
         levels,
         positionStart: Number(genPosStart),
         positionEnd: Number(genPosEnd),
-        maxCapacityM3PerUnit: Number(genCapacityM3) || 1.8,
+        ...(genResolved.payload.capacity !== undefined
+          ? { maxCapacityM3PerUnit: genResolved.payload.capacity }
+          : {
+              lengthM: genResolved.payload.lengthM,
+              widthM: genResolved.payload.widthM,
+              heightM: genResolved.payload.heightM,
+            }),
       });
       setSuccessMsg('Ubicaciones generadas exitosamente.');
       await loadData();
@@ -1730,12 +1751,25 @@ export default function InventoryPage() {
   };
 
   const handleSaveCapacityChanges = async () => {
-    const updates = Object.entries(editedCapacities).map(([id, capacity]) => ({
-      id,
-      capacity: Number(capacity),
-    }));
+    const entries = Object.entries(editedCapacities);
+    if (entries.length === 0) return;
 
-    if (updates.length === 0) return;
+    const updates: Array<{
+      id: string;
+      capacity?: number;
+      lengthM?: number;
+      widthM?: number;
+      heightM?: number;
+    }> = [];
+    for (const [id, draft] of entries) {
+      const resolved = resolveCapacityDraft(draft);
+      if (resolved.error || !resolved.payload) {
+        const code = locations.find((l) => l.id === id)?.code ?? id;
+        setErrorMsg(`${code}: ${resolved.error ?? 'Capacidad inválida.'}`);
+        return;
+      }
+      updates.push({ id, ...resolved.payload });
+    }
 
     setSubmitting(true);
     try {
@@ -1939,12 +1973,10 @@ export default function InventoryPage() {
                 {!selectedMallaWarehouse ? (
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                     {warehouses.map((wh) => {
-                      const totalM3 = Number(wh.totalCapacityM3) || 1;
+                      const totalM3 = Number(wh.totalCapacityM3) || 0;
                       const usedM3 = Number(wh.usedCapacityM3) || 0;
-                      const percentage = Math.min(
-                        100,
-                        Math.round((usedM3 / totalM3) * 100),
-                      );
+                      // Mismo % que el dashboard (calculado en el backend)
+                      const percentage = wh.occupancyPercentage ?? 0;
 
                       return (
                         <button
@@ -1962,9 +1994,15 @@ export default function InventoryPage() {
                                 <p className="text-xs text-slate-400 mt-1">
                                   {wh.locations.length} Posiciones Totales
                                 </p>
+                                {wh.locationsWithoutCapacity > 0 && (
+                                  <p className="text-[11px] text-red-300 mt-0.5">
+                                    {wh.locationsWithoutCapacity} sin capacidad
+                                    cargada
+                                  </p>
+                                )}
                               </div>
                               <span className="text-xs font-mono font-bold bg-slate-950 border border-slate-800 px-3 py-1 rounded-full text-slate-300">
-                                {usedM3} / {totalM3} m³
+                                {formatM3(usedM3, 2)} / {formatM3(totalM3, 2)} m³
                               </span>
                             </div>
 
@@ -1982,7 +2020,9 @@ export default function InventoryPage() {
                                         : 'text-emerald-400'
                                   }
                                 >
-                                  {percentage}%
+                                  {wh.occupancyPercentage === null
+                                    ? 'Sin capacidad'
+                                    : `${percentage.toLocaleString('es-AR')}%`}
                                 </span>
                               </div>
                               <div className="w-full bg-slate-950 h-3 rounded-full overflow-hidden border border-slate-800">
@@ -1994,7 +2034,7 @@ export default function InventoryPage() {
                                         ? 'bg-amber-500'
                                         : 'bg-emerald-500'
                                   }`}
-                                  style={{ width: `${percentage}%` }}
+                                  style={{ width: `${Math.min(100, percentage)}%` }}
                                 ></div>
                               </div>
                             </div>
@@ -2028,8 +2068,13 @@ export default function InventoryPage() {
                           Depósito: {selectedMallaWarehouse.name}
                         </h2>
                         <p className="text-xs text-slate-400">
-                          Ocupación: {selectedMallaWarehouse.usedCapacityM3} m³
-                          / {selectedMallaWarehouse.totalCapacityM3} m³ |{' '}
+                          Ocupación:{' '}
+                          {formatM3(selectedMallaWarehouse.usedCapacityM3, 2)} m³ /{' '}
+                          {formatM3(selectedMallaWarehouse.totalCapacityM3, 2)} m³ (
+                          {selectedMallaWarehouse.occupancyPercentage === null
+                            ? 'sin capacidad cargada'
+                            : `${selectedMallaWarehouse.occupancyPercentage.toLocaleString('es-AR')}%`}
+                          ) |{' '}
                           {filteredMallaLocations.length} posiciones de{' '}
                           {processedMallaLocations.length} visibles
                         </p>
@@ -2088,7 +2133,11 @@ export default function InventoryPage() {
                             onChange={(e) =>
                               setMallaStatusFilter(
                                 e.target.value as
-                                  'ALL' | 'FULL' | 'PARTIAL' | 'EMPTY',
+                                  | 'ALL'
+                                  | 'FULL'
+                                  | 'PARTIAL'
+                                  | 'EMPTY'
+                                  | 'NO_CAPACITY',
                               )
                             }
                             className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-bold"
@@ -2099,6 +2148,9 @@ export default function InventoryPage() {
                               Parciales (A Consolidar/Unificar)
                             </option>
                             <option value="EMPTY">Vacíos (Libres)</option>
+                            <option value="NO_CAPACITY">
+                              Sin capacidad cargada
+                            </option>
                           </select>
                         </div>
                       </div>
@@ -2140,13 +2192,25 @@ export default function InventoryPage() {
                           {mallaStats.empty}
                         </span>
                       </div>
+
+                      {mallaStats.noCapacity > 0 && (
+                        <div className="bg-slate-900 p-3 rounded-lg border border-red-900/60 col-span-2 sm:col-span-4">
+                          <span className="text-red-300 block text-[11px] font-bold">
+                            Sin capacidad cargada (no entran en el %)
+                          </span>
+                          <span className="text-lg font-black text-red-300 font-mono">
+                            {mallaStats.noCapacity}
+                          </span>
+                        </div>
+                      )}
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3 max-h-[550px] overflow-y-auto pr-1">
                       {filteredMallaLocations.map((loc) => {
-                        const pct = loc.occupancyPercentage;
-                        const isFull = pct >= 90;
-                        const isPartial = pct > 0 && pct < 90;
+                        const noCapacity = loc.occupancyPercentage === null;
+                        const pct = loc.occupancyPercentage ?? 0;
+                        const isFull = !noCapacity && pct >= 90;
+                        const isPartial = !noCapacity && pct > 0 && pct < 90;
 
                         return (
                           <div
@@ -2178,7 +2242,9 @@ export default function InventoryPage() {
                                       : 'bg-emerald-950 text-emerald-300 border-emerald-800'
                                 }`}
                               >
-                                {pct}%
+                                {noCapacity
+                                  ? 'Sin cap.'
+                                  : `${pct.toLocaleString('es-AR')}%`}
                               </span>
                             </div>
 
@@ -2192,13 +2258,19 @@ export default function InventoryPage() {
                                         ? 'bg-amber-400'
                                         : 'bg-emerald-500'
                                   }`}
-                                  style={{ width: `${Math.max(5, pct)}%` }}
+                                  style={{
+                                    width: noCapacity
+                                      ? '0%'
+                                      : `${Math.max(5, Math.min(100, pct))}%`,
+                                  }}
                                 ></div>
                               </div>
                               <div className="flex justify-between text-[9px] text-slate-400 font-mono">
                                 <span>
-                                  {loc.occupiedM3.toFixed(2)} /{' '}
-                                  {loc.maxCapacityM3} m³
+                                  {formatM3(loc.occupiedM3)} /{' '}
+                                  {loc.hasCapacity
+                                    ? `${formatM3(loc.maxCapacityM3)} m³`
+                                    : 'Sin capacidad cargada'}
                                 </span>
                                 <span>{loc.totalBultosLoc} bultos</span>
                               </div>
@@ -3754,20 +3826,15 @@ export default function InventoryPage() {
                       />
                     </div>
 
-                    <div>
-                      <label className="block text-slate-400 mb-1">
-                        Capacidad Max m³ x Posición
-                      </label>
-                      <input
-                        type="number"
-                        step="0.1"
-                        value={genCapacityM3}
-                        onChange={(e) =>
-                          setGenCapacityM3(Number(e.target.value))
-                        }
-                        className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-amber-400 font-mono font-bold"
-                      />
-                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+                    <p className="mb-2 text-xs font-bold text-slate-300">
+                      Capacidad por posición: medidas internas (largo × ancho ×
+                      alto, en metros) o m³ directo. Acepta coma o punto, hasta
+                      3 decimales.
+                    </p>
+                    <CapacityFields value={genCapacity} onChange={setGenCapacity} />
                   </div>
 
                   <button
@@ -3859,7 +3926,10 @@ export default function InventoryPage() {
                           <th className="p-3">Área / Zona</th>
                           <th className="p-3">Nivel</th>
                           <th className="p-3">Categoría</th>
-                          <th className="p-3">Capacidad Max (m³)</th>
+                          <th className="p-3">
+                            Medidas L × A × H (m) o m³ directo
+                          </th>
+                          <th className="p-3">Ocupación</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800">
@@ -3888,23 +3958,40 @@ export default function InventoryPage() {
                             <td className="p-3">{loc.zoneName}</td>
                             <td className="p-3 font-bold">{loc.rackLevel}</td>
                             <td className="p-3">{loc.category}</td>
-                            <td className="p-3">
-                              <input
-                                type="number"
-                                step="0.1"
+                            <td className="p-3 min-w-[320px]">
+                              <CapacityFields
+                                compact
                                 value={
-                                  editedCapacities[loc.id] !== undefined
-                                    ? editedCapacities[loc.id]
-                                    : loc.maxCapacityM3
+                                  editedCapacities[loc.id] ?? {
+                                    lengthM: toInputText(loc.lengthM),
+                                    widthM: toInputText(loc.widthM),
+                                    heightM: toInputText(loc.heightM),
+                                    capacityM3: toInputText(loc.maxCapacityM3),
+                                  }
                                 }
-                                onChange={(e) =>
+                                onChange={(next) =>
                                   setEditedCapacities((prev) => ({
                                     ...prev,
-                                    [loc.id]: Number(e.target.value),
+                                    [loc.id]: next,
                                   }))
                                 }
-                                className="w-24 bg-slate-950 border border-slate-800 p-1 rounded text-amber-300 font-mono font-bold text-center"
                               />
+                            </td>
+                            <td className="p-3 whitespace-nowrap font-mono text-[11px]">
+                              {loc.hasCapacity ? (
+                                <span className="text-slate-300">
+                                  {formatM3(loc.usedCapacityM3)} /{' '}
+                                  {formatM3(loc.maxCapacityM3)} m³ (
+                                  {(loc.occupancyPercentage ?? 0).toLocaleString(
+                                    'es-AR',
+                                  )}
+                                  %)
+                                </span>
+                              ) : (
+                                <span className="font-bold text-red-300">
+                                  Sin capacidad cargada
+                                </span>
+                              )}
                             </td>
                           </tr>
                         ))}
