@@ -4,6 +4,8 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { OrderStatus, Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { canViewMoney } from '../common/sales';
+import { isSeller } from '../auth/permissions';
+import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import {
   BUENOS_AIRES_KEY,
   CABA_KEY,
@@ -36,6 +38,8 @@ export type Level = 'province' | 'zone' | 'locality';
 export interface Metrics {
   orders: number;
   customers: number;
+  /** Vendedores distintos con pedidos (sin contar "Sin vendedor asignado"). */
+  activeSellers: number;
   bultos: number;
   weightKg: number;
   volumeM3: number;
@@ -61,12 +65,14 @@ interface AggRow {
   sort: number | null;
   orders: bigint;
   customers: bigint;
+  sellers: bigint;
   bultos: unknown;
   kg: unknown;
   m3: unknown;
   amount?: unknown;
   p_orders: bigint;
   p_customers: bigint;
+  p_sellers: bigint;
   p_bultos: unknown;
   p_kg: unknown;
   p_m3: unknown;
@@ -94,7 +100,11 @@ export class AnalyticsService {
   // Período y filtros
   // ---------------------------------------------------------------------------
 
-  private period(from?: string, to?: string, defaultDays = DEFAULT_DAYS): Period {
+  private period(
+    from?: string,
+    to?: string,
+    defaultDays = DEFAULT_DAYS,
+  ): Period {
     const toStr = to ?? todayAr();
     const end = new Date(startOfDayAr(toStr).getTime() + DAY_MS);
     const start = from
@@ -104,11 +114,15 @@ export class AnalyticsService {
       throw new BadRequestException('Rango de fechas inválido.');
     }
     if (start >= end) {
-      throw new BadRequestException('La fecha "desde" no puede ser posterior a "hasta".');
+      throw new BadRequestException(
+        'La fecha "desde" no puede ser posterior a "hasta".',
+      );
     }
     const days = Math.round((end.getTime() - start.getTime()) / DAY_MS);
     if (days > MAX_DAYS) {
-      throw new BadRequestException(`El rango no puede superar ${MAX_DAYS} días.`);
+      throw new BadRequestException(
+        `El rango no puede superar ${MAX_DAYS} días.`,
+      );
     }
     const prevStart = new Date(start.getTime() - days * DAY_MS);
     return {
@@ -138,10 +152,14 @@ export class AnalyticsService {
       conds.push(Prisma.sql`o.source_warehouse_id = ${f.warehouseId}::uuid`);
     }
     if (f.sellerId === 'none') conds.push(Prisma.sql`o.seller_id IS NULL`);
-    else if (f.sellerId) conds.push(Prisma.sql`o.seller_id = ${f.sellerId}::uuid`);
+    else if (f.sellerId)
+      conds.push(Prisma.sql`o.seller_id = ${f.sellerId}::uuid`);
 
     const zoneProvince = provinceKeySql(Prisma.sql`z.province`, Prisma.sql`''`);
-    const addrProvince = provinceKeySql(Prisma.sql`a.province`, Prisma.sql`a.city`);
+    const addrProvince = provinceKeySql(
+      Prisma.sql`a.province`,
+      Prisma.sql`a.city`,
+    );
 
     return Prisma.sql`base AS (
       SELECT o.customer_id,
@@ -171,11 +189,13 @@ export class AnalyticsService {
     return Prisma.sql`
       COUNT(*) ${cur} AS orders,
       COUNT(DISTINCT customer_id) ${cur} AS customers,
+      COUNT(DISTINCT seller_id) ${cur} AS sellers,
       COALESCE(SUM(total_bultos) ${cur}, 0) AS bultos,
       COALESCE(SUM(total_weight_kg) ${cur}, 0) AS kg,
       COALESCE(SUM(total_volume_m3) ${cur}, 0) AS m3,
       COUNT(*) ${prev} AS p_orders,
       COUNT(DISTINCT customer_id) ${prev} AS p_customers,
+      COUNT(DISTINCT seller_id) ${prev} AS p_sellers,
       COALESCE(SUM(total_bultos) ${prev}, 0) AS p_bultos,
       COALESCE(SUM(total_weight_kg) ${prev}, 0) AS p_kg,
       COALESCE(SUM(total_volume_m3) ${prev}, 0) AS p_m3
@@ -183,10 +203,12 @@ export class AnalyticsService {
   }
 
   private metrics(r: AggRow, prefix: '' | 'p_', withAmount: boolean): Metrics {
-    const g = (k: string) => (r as unknown as Record<string, unknown>)[prefix + k];
+    const g = (k: string) =>
+      (r as unknown as Record<string, unknown>)[prefix + k];
     const m: Metrics = {
       orders: num(g('orders')),
       customers: num(g('customers')),
+      activeSellers: num(g('sellers')),
       bultos: num(g('bultos')),
       weightKg: round(num(g('kg')), 2),
       volumeM3: round(num(g('m3')), 3),
@@ -215,7 +237,12 @@ export class AnalyticsService {
   // GET /analytics/sales-by-zone
   // ---------------------------------------------------------------------------
 
-  async salesByZone(q: SalesByZoneQueryDto, role: UserRole) {
+  async salesByZone(query: SalesByZoneQueryDto, user: AuthenticatedUser) {
+    // El Vendedor sólo ve sus números: se ignora cualquier sellerId recibido.
+    const q: SalesByZoneQueryDto = isSeller(user.role)
+      ? { ...query, sellerId: user.id }
+      : query;
+    const role = user.role;
     const withAmount = canViewMoney(role);
     const p = this.period(q.from, q.to);
     const province = q.province ? normalizeGeo(q.province) : undefined;
@@ -225,7 +252,9 @@ export class AnalyticsService {
       const zoned = await this.provincesWithZones();
       level = q.zoneId || !zoned.has(province) ? 'locality' : 'zone';
     } else if (q.zoneId) {
-      throw new BadRequestException('Para filtrar por zona indique la provincia.');
+      throw new BadRequestException(
+        'Para filtrar por zona indique la provincia.',
+      );
     }
 
     // Alcance del nivel (dentro del CTE "base")
@@ -233,14 +262,28 @@ export class AnalyticsService {
     if (province) scope.push(Prisma.sql`prov_key = ${province}`);
     if (q.zoneId === NO_ZONE) scope.push(Prisma.sql`zone_id IS NULL`);
     else if (q.zoneId) scope.push(Prisma.sql`zone_id = ${q.zoneId}::uuid`);
-    const where = scope.length ? Prisma.sql`WHERE ${Prisma.join(scope, ' AND ')}` : Prisma.empty;
+    const where = scope.length
+      ? Prisma.sql`WHERE ${Prisma.join(scope, ' AND ')}`
+      : Prisma.empty;
 
     const group =
       level === 'province'
-        ? { key: Prisma.sql`prov_key`, label: Prisma.sql`mode() WITHIN GROUP (ORDER BY prov_label)`, sort: Prisma.sql`NULL::int` }
+        ? {
+            key: Prisma.sql`prov_key`,
+            label: Prisma.sql`mode() WITHIN GROUP (ORDER BY prov_label)`,
+            sort: Prisma.sql`NULL::int`,
+          }
         : level === 'zone'
-          ? { key: Prisma.sql`COALESCE(zone_id::text, ${NO_ZONE})`, label: Prisma.sql`MAX(zone_name)`, sort: Prisma.sql`MIN(zone_sort)` }
-          : { key: Prisma.sql`loc_key`, label: Prisma.sql`mode() WITHIN GROUP (ORDER BY loc_label)`, sort: Prisma.sql`NULL::int` };
+          ? {
+              key: Prisma.sql`COALESCE(zone_id::text, ${NO_ZONE})`,
+              label: Prisma.sql`MAX(zone_name)`,
+              sort: Prisma.sql`MIN(zone_sort)`,
+            }
+          : {
+              key: Prisma.sql`loc_key`,
+              label: Prisma.sql`mode() WITHIN GROUP (ORDER BY loc_label)`,
+              sort: Prisma.sql`NULL::int`,
+            };
 
     const cte = this.baseCte(q, p, withAmount);
     const agg = this.aggregates(withAmount);
@@ -259,7 +302,12 @@ export class AnalyticsService {
 
     const totals = this.metrics(totalsRows[0], '', withAmount);
     const prevTotals = this.metrics(totalsRows[0], 'p_', withAmount);
-    const additive: AdditiveKey[] = ['orders', 'bultos', 'weightKg', 'volumeM3'];
+    const additive: AdditiveKey[] = [
+      'orders',
+      'bultos',
+      'weightKg',
+      'volumeM3',
+    ];
     if (withAmount) additive.push('amount');
 
     const result = rows.map((r) => {
@@ -267,7 +315,8 @@ export class AnalyticsService {
       const current = this.metrics(r, '', withAmount);
       const previous = this.metrics(r, 'p_', withAmount);
       const share: Partial<Record<AdditiveKey, number>> = {};
-      const change: Partial<Record<AdditiveKey | 'customers', number | null>> = {};
+      const change: Partial<Record<AdditiveKey | 'customers', number | null>> =
+        {};
       for (const k of additive) {
         const t = totals[k] ?? 0;
         share[k] = t > 0 ? round(((current[k] ?? 0) / t) * 100, 1) : 0;
@@ -276,12 +325,14 @@ export class AnalyticsService {
         const prev = previous[k] ?? 0;
         const cur = current[k] ?? 0;
         // null = sin actividad en el período anterior (zona "nueva")
-        change[k] = prev > 0 ? round(((cur - prev) / prev) * 100, 1) : cur > 0 ? null : 0;
+        change[k] =
+          prev > 0 ? round(((cur - prev) / prev) * 100, 1) : cur > 0 ? null : 0;
       }
       let label: string;
       if (level === 'province') label = this.provinceLabel(key, r.label);
-      else if (level === 'zone') label = key === NO_ZONE ? NO_ZONE_LABEL : (r.label ?? key);
-      else label = key === CABA_KEY ? 'CABA' : (r.label?.trim() || key);
+      else if (level === 'zone')
+        label = key === NO_ZONE ? NO_ZONE_LABEL : (r.label ?? key);
+      else label = key === CABA_KEY ? 'CABA' : r.label?.trim() || key;
 
       return {
         key,
@@ -359,11 +410,26 @@ export class AnalyticsService {
   }
 
   /** Top 5 clientes y vendedores por localidad (período actual). */
-  private async localityDetails(cte: Prisma.Sql, where: Prisma.Sql, withAmount: boolean) {
-    const scope = where === Prisma.empty ? Prisma.sql`WHERE is_current` : Prisma.sql`${where} AND is_current`;
+  private async localityDetails(
+    cte: Prisma.Sql,
+    where: Prisma.Sql,
+    withAmount: boolean,
+  ) {
+    const scope =
+      where === Prisma.empty
+        ? Prisma.sql`WHERE is_current`
+        : Prisma.sql`${where} AND is_current`;
     const [top, sellers] = await Promise.all([
       this.prisma.$queryRaw<
-        Array<{ loc_key: string; customer_id: string; name: string; orders: bigint; bultos: unknown; kg: unknown; amount?: unknown }>
+        Array<{
+          loc_key: string;
+          customer_id: string;
+          name: string;
+          orders: bigint;
+          bultos: unknown;
+          kg: unknown;
+          amount?: unknown;
+        }>
       >`
         WITH ${cte},
         ranked AS (
@@ -383,7 +449,13 @@ export class AnalyticsService {
         )
         SELECT * FROM ranked WHERE rn <= 5 ORDER BY loc_key, rn`,
       this.prisma.$queryRaw<
-        Array<{ loc_key: string; seller_id: string | null; name: string | null; orders: bigint; bultos: unknown }>
+        Array<{
+          loc_key: string;
+          seller_id: string | null;
+          name: string | null;
+          orders: bigint;
+          bultos: unknown;
+        }>
       >`
         WITH ${cte}
         SELECT b.loc_key, b.seller_id,
@@ -415,7 +487,7 @@ export class AnalyticsService {
       const list = sellerMap.get(s.loc_key) ?? [];
       list.push({
         sellerId: s.seller_id,
-        name: s.seller_id ? (s.name?.trim() || 'Usuario') : NO_SELLER_LABEL,
+        name: s.seller_id ? s.name?.trim() || 'Usuario' : NO_SELLER_LABEL,
         orders: num(s.orders),
         bultos: num(s.bultos),
       });
@@ -428,15 +500,27 @@ export class AnalyticsService {
   // GET /analytics/top-zones (tarjeta del Dashboard)
   // ---------------------------------------------------------------------------
 
-  async topZones(q: TopZonesQueryDto) {
+  async topZones(q: TopZonesQueryDto, user: AuthenticatedUser) {
     const days = q.days ?? 30;
     const limit = q.limit ?? 3;
     const p = this.period(undefined, undefined, days);
-    const cte = this.baseCte({}, p, false);
+    const cte = this.baseCte(
+      isSeller(user.role) ? { sellerId: user.id } : {},
+      p,
+      false,
+    );
 
     // Zona si la dirección la tiene; si no, la provincia (provincias sin zonas).
     const rows = await this.prisma.$queryRaw<
-      Array<{ zone_id: string | null; zone_name: string | null; prov_key: string; prov_label: string | null; orders: bigint; bultos: unknown; p_orders: bigint }>
+      Array<{
+        zone_id: string | null;
+        zone_name: string | null;
+        prov_key: string;
+        prov_label: string | null;
+        orders: bigint;
+        bultos: unknown;
+        p_orders: bigint;
+      }>
     >`
       WITH ${cte}
       SELECT zone_id, MAX(zone_name) AS zone_name, prov_key, mode() WITHIN GROUP (ORDER BY prov_label) AS prov_label,
@@ -463,8 +547,13 @@ export class AnalyticsService {
         return {
           province: r.prov_key,
           provinceLabel,
-          zoneId: r.zone_id ?? (r.prov_key === BUENOS_AIRES_KEY ? NO_ZONE : null),
-          label: r.zone_name ?? (r.prov_key === BUENOS_AIRES_KEY ? `${NO_ZONE_LABEL} (Buenos Aires)` : provinceLabel),
+          zoneId:
+            r.zone_id ?? (r.prov_key === BUENOS_AIRES_KEY ? NO_ZONE : null),
+          label:
+            r.zone_name ??
+            (r.prov_key === BUENOS_AIRES_KEY
+              ? `${NO_ZONE_LABEL} (Buenos Aires)`
+              : provinceLabel),
           orders,
           bultos: num(r.bultos),
           share: totalOrders > 0 ? round((orders / totalOrders) * 100, 1) : 0,
@@ -478,16 +567,20 @@ export class AnalyticsService {
   // GET /analytics/filters
   // ---------------------------------------------------------------------------
 
-  async filters(role: UserRole) {
+  async filters(user: AuthenticatedUser) {
+    const role = user.role;
+    const sellerOnly = isSeller(role);
     const [warehouses, sellers] = await Promise.all([
       this.prisma.warehouse.findMany({
         where: { isActive: true },
         select: { id: true, name: true },
         orderBy: { name: 'asc' },
       }),
+      // Usuarios con rol Vendedor (incluye inactivos para filtrar historial).
+      // El frontend agrega la opción "Sin vendedor asignado" (sellerId=none).
       this.prisma.user.findMany({
-        where: { salesOrders: { some: {} } },
-        select: { id: true, firstName: true, lastName: true },
+        where: sellerOnly ? { id: user.id } : { role: UserRole.SELLER },
+        select: { id: true, firstName: true, lastName: true, isActive: true },
         orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
       }),
     ]);
@@ -497,9 +590,11 @@ export class AnalyticsService {
       defaults: { from: p.from, to: p.to, statuses: DEFAULT_STATUSES },
       statuses: Object.values(OrderStatus),
       warehouses,
+      sellerLocked: sellerOnly,
       sellers: sellers.map((s) => ({
         id: s.id,
         name: `${s.firstName} ${s.lastName}`.trim(),
+        isActive: s.isActive,
       })),
     };
   }

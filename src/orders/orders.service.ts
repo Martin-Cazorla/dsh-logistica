@@ -5,8 +5,9 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
-import { OrderStatus, Prisma } from '@prisma/client';
+import { OrderStatus, Prisma, UserRole } from '@prisma/client';
 import { randomBytes } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
@@ -22,7 +23,12 @@ import {
   CreateOrderDto,
   ListOrdersQueryDto,
 } from './dto/create-order.dto';
-import { releasePendingReservations } from './services/pick-reservations';
+import {
+  fetchAvailableStock,
+  releasePendingReservations,
+} from './services/pick-reservations';
+import { isSeller } from '../auth/permissions';
+import { canSellerUseCustomer, orderScopeFor } from '../common/seller-scope';
 
 const USER_NAME = { select: { id: true, firstName: true, lastName: true } };
 
@@ -32,6 +38,7 @@ const ORDER_LIST_INCLUDE = {
   sourceWarehouse: { select: { id: true, name: true, code: true } },
   transport: { select: { id: true, name: true } },
   createdBy: USER_NAME,
+  seller: USER_NAME,
   pickerAssignments: {
     select: { user: USER_NAME, assignedAt: true },
     orderBy: { assignedAt: 'asc' },
@@ -87,9 +94,15 @@ export class OrdersService {
       );
     }
 
+    const sellerId = await this.resolveSeller(dto, actor);
+
     const [address, warehouse, products, customer] = await Promise.all([
       this.prisma.customerAddress.findFirst({
-        where: { id: dto.addressId, customerId: dto.customerId, isActive: true },
+        where: {
+          id: dto.addressId,
+          customerId: dto.customerId,
+          isActive: true,
+        },
         select: { id: true },
       }),
       this.prisma.warehouse.findUnique({
@@ -100,6 +113,7 @@ export class OrdersService {
         where: { id: { in: productIds } },
         select: {
           id: true,
+          sku: true,
           unitsPerBox: true,
           weightKg: true,
           volumeM3: true,
@@ -108,12 +122,17 @@ export class OrdersService {
       }),
       this.prisma.customer.findUnique({
         where: { id: dto.customerId },
-        select: { id: true, isActive: true },
+        select: { id: true, isActive: true, accountSellerId: true },
       }),
     ]);
 
     if (!customer || !customer.isActive) {
       throw new BadRequestException('El cliente no existe o está inactivo.');
+    }
+    if (!canSellerUseCustomer(actor, customer.accountSellerId)) {
+      throw new ForbiddenException(
+        'El cliente pertenece a la cartera de otro vendedor.',
+      );
     }
     if (!address) {
       throw new BadRequestException(
@@ -132,6 +151,38 @@ export class OrdersService {
       throw new NotFoundException(
         `Productos no encontrados: ${missing.join(', ')}.`,
       );
+    }
+
+    // No se vende lo que no hay: cada línea debe caber en el DISPONIBLE
+    // (físico − reservado) del depósito elegido, con la misma regla que usa la
+    // reserva del picking.
+    const availability = await fetchAvailableStock(this.prisma, {
+      productIds,
+      warehouseIds: [dto.sourceWarehouseId],
+    });
+    const availableByProduct = new Map(
+      availability.map((a) => [a.productId, a.available]),
+    );
+    const shortages = dto.items
+      .map((item) => ({
+        productId: item.productId,
+        sku: productMap.get(item.productId)!.sku,
+        requested: item.bultos,
+        available: availableByProduct.get(item.productId) ?? 0,
+      }))
+      .filter((line) => line.requested > line.available);
+    if (shortages.length > 0) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: `Stock disponible insuficiente: ${shortages
+          .map(
+            (l) =>
+              `${l.sku} (pedido ${l.requested}, disponible ${l.available})`,
+          )
+          .join(', ')}.`,
+        shortages,
+      });
     }
 
     const salesEnabled = isSalesModuleEnabled();
@@ -200,7 +251,7 @@ export class OrdersService {
             customerId: dto.customerId,
             addressId: dto.addressId,
             sourceWarehouseId: dto.sourceWarehouseId,
-            sellerId: dto.sellerId ?? null,
+            sellerId,
             transportId: dto.transportId ?? null,
             createdById: actor.id,
             currency: dto.currency,
@@ -235,6 +286,7 @@ export class OrdersService {
             metadata: {
               orderNumber,
               customerId: dto.customerId,
+              sellerId,
               items: dto.items.length,
               totalBultos,
             },
@@ -265,7 +317,7 @@ export class OrdersService {
     const limit = query.limit ?? 50;
     const page = query.page ?? 1;
 
-    const where: Prisma.OrderWhereInput = {};
+    const where: Prisma.OrderWhereInput = { ...orderScopeFor(actor) };
     if (query.status) where.status = query.status;
     const term = query.search?.trim();
     if (term) {
@@ -294,8 +346,10 @@ export class OrdersService {
   }
 
   async findOne(id: string, actor: AuthenticatedUser) {
-    const order = await this.prisma.order.findUnique({
-      where: { id },
+    // findFirst con el alcance del vendedor: un pedido ajeno responde 404
+    // (no se revela su existencia).
+    const order = await this.prisma.order.findFirst({
+      where: { id, ...orderScopeFor(actor) },
       include: {
         ...ORDER_LIST_INCLUDE,
         picker: USER_NAME,
@@ -412,6 +466,40 @@ export class OrdersService {
   }
 
   // ---------------------------------------------------------------------------
+
+  /**
+   * Vendedor obligatorio en pedidos nuevos:
+   *  - Si carga un Vendedor, el vendedor es él mismo (no puede elegir otro).
+   *  - Si carga un Administrador o Gestor, debe indicar un usuario activo con
+   *    rol Vendedor (el frontend precarga el vendedor de cuenta del cliente).
+   */
+  private async resolveSeller(
+    dto: CreateOrderDto,
+    actor: AuthenticatedUser,
+  ): Promise<string> {
+    if (isSeller(actor.role)) {
+      if (dto.sellerId && dto.sellerId !== actor.id) {
+        throw new ForbiddenException(
+          'Un vendedor sólo puede cargar pedidos a su propio nombre.',
+        );
+      }
+      return actor.id;
+    }
+
+    if (!dto.sellerId) {
+      throw new BadRequestException('Indique el vendedor del pedido.');
+    }
+    const seller = await this.prisma.user.findUnique({
+      where: { id: dto.sellerId },
+      select: { role: true, isActive: true },
+    });
+    if (!seller || !seller.isActive || seller.role !== UserRole.SELLER) {
+      throw new BadRequestException(
+        'El vendedor indicado no existe, está inactivo o no tiene rol Vendedor.',
+      );
+    }
+    return dto.sellerId;
+  }
 
   private present<T extends object>(order: T, actor: AuthenticatedUser): T {
     return canViewMoney(actor.role) ? order : stripMoney(order);

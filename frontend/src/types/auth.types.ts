@@ -10,7 +10,8 @@ export type UserRole =
   | 'WAREHOUSE_MANAGER'
   | 'PICKER'
   | 'HELPER'
-  | 'DRIVER';
+  | 'DRIVER'
+  | 'SELLER';
 
 export interface User {
   id: string;

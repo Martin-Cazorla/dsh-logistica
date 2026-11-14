@@ -13,6 +13,8 @@ export function homePathForRole(role: UserRole): string {
     case 'DRIVER':
     case 'HELPER':
       return '/routes';
+    case 'SELLER':
+      return '/sales/stock';
     default:
       return '/login';
   }

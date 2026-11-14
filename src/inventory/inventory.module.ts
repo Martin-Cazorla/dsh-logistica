@@ -6,6 +6,7 @@ import { AuthModule } from '../auth/auth.module';
 import { InventoryService } from './inventory.service';
 import { OccupationService } from './services/occupation.service';
 import { StockRequestsService } from './services/stock-requests.service';
+import { StockAvailabilityService } from './services/stock-availability.service';
 import { InventoryController } from './inventory.controller';
 import { OccupationController } from './controllers/occupation.controller';
 import { InventoryGateway } from './inventory.gateway';
@@ -18,6 +19,7 @@ import { InventoryGateway } from './inventory.gateway';
     InventoryService,
     OccupationService,
     StockRequestsService,
+    StockAvailabilityService,
     InventoryGateway,
   ],
   exports: [InventoryService, OccupationService, InventoryGateway],

@@ -14,7 +14,12 @@ import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
 import { CreateCustomerAddressDto } from './dto/create-customer-address.dto';
 import { SalesZonesService } from '../sales-zones/sales-zones.service';
-import { Prisma } from '@prisma/client';
+import { Prisma, UserRole } from '@prisma/client';
+import { customerScopeFor, orderScopeFor } from '../common/seller-scope';
+
+const ACCOUNT_SELLER = {
+  select: { id: true, firstName: true, lastName: true },
+} as const;
 
 /** Sólo direcciones activas, con la principal primero. */
 const ACTIVE_ADDRESSES = {
@@ -85,9 +90,27 @@ export class CustomersService {
     throw new InternalServerErrorException(fallback);
   }
 
+  /** El vendedor de cuenta debe ser un usuario activo con rol Vendedor. */
+  private async assertAccountSeller(
+    db: Prisma.TransactionClient | PrismaService,
+    accountSellerId: string | null | undefined,
+  ) {
+    if (!accountSellerId) return;
+    const seller = await db.user.findUnique({
+      where: { id: accountSellerId },
+      select: { role: true, isActive: true },
+    });
+    if (!seller || !seller.isActive || seller.role !== UserRole.SELLER) {
+      throw new BadRequestException(
+        'El vendedor de cuenta debe ser un usuario activo con rol Vendedor.',
+      );
+    }
+  }
+
   async create(createCustomerDto: CreateCustomerDto, actor: AuthenticatedUser) {
     const { addresses: rawAddresses, ...customerData } = createCustomerDto;
     const addresses = this.normalizeAddresses(rawAddresses);
+    await this.assertAccountSeller(this.prisma, customerData.accountSellerId);
 
     const existingByCuit = await this.prisma.customer.findUnique({
       where: { cuit: customerData.cuit },
@@ -121,6 +144,7 @@ export class CustomersService {
           include: {
             addresses: ACTIVE_ADDRESSES,
             transport: true,
+            accountSeller: ACCOUNT_SELLER,
           },
         });
 
@@ -146,17 +170,22 @@ export class CustomersService {
     }
   }
 
-  async findAll(query: {
-    search?: string;
-    page?: number;
-    limit?: number;
-    isActive?: boolean;
-  }) {
+  async findAll(
+    query: {
+      search?: string;
+      page?: number;
+      limit?: number;
+      isActive?: boolean;
+    },
+    actor: AuthenticatedUser,
+  ) {
     const page = Number(query.page) || 1;
     const limit = Number(query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    const where: Prisma.CustomerWhereInput = {};
+    // El alcance del vendedor se combina con AND para que la búsqueda (OR)
+    // no lo pueda ampliar.
+    const where: Prisma.CustomerWhereInput = { AND: [customerScopeFor(actor)] };
 
     if (query.isActive !== undefined) {
       where.isActive = String(query.isActive) === 'true';
@@ -181,6 +210,7 @@ export class CustomersService {
         include: {
           addresses: ACTIVE_ADDRESSES,
           transport: true,
+          accountSeller: ACCOUNT_SELLER,
         },
         orderBy: { createdAt: 'desc' },
       }),
@@ -198,13 +228,16 @@ export class CustomersService {
     };
   }
 
-  async findOne(id: string) {
-    const customer = await this.prisma.customer.findUnique({
-      where: { id },
+  async findOne(id: string, actor: AuthenticatedUser) {
+    // Un cliente de otra cartera responde 404 para el Vendedor.
+    const customer = await this.prisma.customer.findFirst({
+      where: { AND: [{ id }, customerScopeFor(actor)] },
       include: {
         addresses: ACTIVE_ADDRESSES,
         transport: true,
+        accountSeller: ACCOUNT_SELLER,
         orders: {
+          where: orderScopeFor(actor),
           take: 5,
           orderBy: { createdAt: 'desc' },
         },
@@ -308,12 +341,15 @@ export class CustomersService {
           }
         }
 
+        await this.assertAccountSeller(tx, customerData.accountSellerId);
+
         const updated = await tx.customer.update({
           where: { id },
           data: customerData,
           include: {
             addresses: ACTIVE_ADDRESSES,
             transport: true,
+            accountSeller: ACCOUNT_SELLER,
           },
         });
 
@@ -354,7 +390,7 @@ export class CustomersService {
   }
 
   async remove(id: string, actor: AuthenticatedUser) {
-    await this.findOne(id);
+    await this.findOne(id, actor);
     try {
       return await this.prisma.$transaction(async (tx) => {
         const customer = await tx.customer.update({

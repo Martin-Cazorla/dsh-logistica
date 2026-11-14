@@ -42,6 +42,8 @@ export interface Customer {
   logisticsFee: number;
   isActive: boolean;
   transportId?: string;
+  accountSellerId?: string | null;
+  accountSeller?: { id: string; firstName: string; lastName: string } | null;
   addresses: CustomerAddress[];
   createdAt: string;
   updatedAt: string;
@@ -60,6 +62,8 @@ export interface CreateCustomerPayload {
   logisticsFee?: number;
   isActive?: boolean;
   transportId?: string;
+  /** Vendedor de cuenta (rol Vendedor). null lo desasigna. */
+  accountSellerId?: string | null;
   addresses: CustomerAddressInput[];
 }
 

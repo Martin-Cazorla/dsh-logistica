@@ -6,8 +6,9 @@ import Header from '@/components/layout/Header';
 import Sidebar from '@/components/layout/Sidebar';
 
 /**
- * /dashboard/* es el área de gestión (Administrador y Gestor). Cada página
- * aplica además su permiso específico (p. ej. Usuarios sólo ADMIN).
+ * /dashboard/* es el área de gestión (Administrador, Gestor y Vendedor). Cada
+ * página aplica además su permiso específico (p. ej. Usuarios sólo ADMIN; el
+ * Vendedor sólo entra a Pedidos, Clientes y Análisis por zona).
  */
 export default function DashboardLayout({
   children,
@@ -15,7 +16,7 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   return (
-    <ProtectedRoute allowedRoles={['ADMIN', 'WAREHOUSE_MANAGER']}>
+    <ProtectedRoute allowedRoles={['ADMIN', 'WAREHOUSE_MANAGER', 'SELLER']}>
       <div className="flex min-h-screen flex-col bg-slate-900 text-slate-100">
         <Header />
         <div className="flex flex-1 flex-col md:flex-row">

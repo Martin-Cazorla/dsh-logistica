@@ -34,7 +34,9 @@ export class OrdersController {
     return { salesModuleEnabled: isSalesModuleEnabled() };
   }
 
+  /** Alta: Administrador, Gestor y Vendedor (este último sólo a su nombre). */
   @Post()
+  @RequirePermissions(Permission.ORDERS_CREATE)
   create(@Body() dto: CreateOrderDto, @GetUser() user: AuthenticatedUser) {
     return this.ordersService.create(dto, user);
   }

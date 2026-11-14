@@ -12,8 +12,9 @@ import { GetUser } from '../auth/decorators/get-user.decorator';
 import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 
 /**
- * Análisis comercial (Administrador y Gestor). Los importes sólo se incluyen
- * si canViewMoney(rol): módulo de ventas activo + permiso SALES_VIEW.
+ * Análisis comercial (Administrador, Gestor y Vendedor). El Vendedor sólo ve
+ * sus propios números (el servicio fuerza sellerId). Los importes sólo se
+ * incluyen si canViewMoney(rol): módulo de ventas activo + permiso SALES_VIEW.
  */
 @Controller('analytics')
 @RequirePermissions(Permission.ANALYTICS_VIEW)
@@ -26,18 +27,21 @@ export class AnalyticsController {
     @Query() query: SalesByZoneQueryDto,
     @GetUser() user: AuthenticatedUser,
   ) {
-    return this.analytics.salesByZone(query, user.role);
+    return this.analytics.salesByZone(query, user);
   }
 
   /** Top de zonas del último período (tarjeta del Dashboard). */
   @Get('top-zones')
-  topZones(@Query() query: TopZonesQueryDto) {
-    return this.analytics.topZones(query);
+  topZones(
+    @Query() query: TopZonesQueryDto,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    return this.analytics.topZones(query, user);
   }
 
   /** Opciones de filtros: depósitos, vendedores, estados y período por defecto. */
   @Get('filters')
   filters(@GetUser() user: AuthenticatedUser) {
-    return this.analytics.filters(user.role);
+    return this.analytics.filters(user);
   }
 }

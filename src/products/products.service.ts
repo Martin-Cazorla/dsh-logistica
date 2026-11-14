@@ -3,11 +3,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-
-interface AvailabilityRow {
-  product_id: string;
-  available: number;
-}
+import { fetchAvailableStock } from '../orders/services/pick-reservations';
 
 @Injectable()
 export class ProductsService {
@@ -54,22 +50,18 @@ export class ProductsService {
     });
 
     const ids = products.map((p) => p.id);
-    const availability =
-      ids.length === 0
-        ? []
-        : await this.prisma.$queryRaw<AvailabilityRow[]>`
-            SELECT i.product_id, SUM(i.quantity - i.reserved)::int AS available
-            FROM inventories i
-            JOIN locations l ON l.id = i.location_id
-            WHERE i.product_id = ANY(${ids}::uuid[])
-              AND l.is_blocked = false
-              ${params.warehouseId ? Prisma.sql`AND i.warehouse_id = ${params.warehouseId}::uuid` : Prisma.empty}
-            GROUP BY i.product_id
-          `;
+    const availability = await fetchAvailableStock(this.prisma, {
+      productIds: ids,
+      ...(params.warehouseId ? { warehouseIds: [params.warehouseId] } : {}),
+    });
 
-    const availableMap = new Map(
-      availability.map((a) => [a.product_id, Number(a.available)]),
-    );
+    const availableMap = new Map<string, number>();
+    for (const a of availability) {
+      availableMap.set(
+        a.productId,
+        (availableMap.get(a.productId) ?? 0) + a.available,
+      );
+    }
 
     return products.map((p) => ({
       id: p.id,

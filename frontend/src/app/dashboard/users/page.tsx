@@ -25,7 +25,14 @@ import {
   PageHeader,
 } from '@/components/ui';
 
-const ROLES: UserRole[] = ['ADMIN', 'WAREHOUSE_MANAGER', 'PICKER', 'HELPER', 'DRIVER'];
+const ROLES: UserRole[] = [
+  'ADMIN',
+  'WAREHOUSE_MANAGER',
+  'SELLER',
+  'PICKER',
+  'HELPER',
+  'DRIVER',
+];
 
 const ROLE_TONES: Record<UserRole, BadgeTone> = {
   ADMIN: 'red',
@@ -33,6 +40,7 @@ const ROLE_TONES: Record<UserRole, BadgeTone> = {
   PICKER: 'sky',
   HELPER: 'purple',
   DRIVER: 'emerald',
+  SELLER: 'amber',
 };
 
 interface FormState {

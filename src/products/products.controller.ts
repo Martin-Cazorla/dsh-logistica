@@ -16,7 +16,11 @@ import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.in
 import { canViewMoney } from '../common/sales';
 
 @Controller('products')
-@RequirePermissions(Permission.ORDERS_MANAGE, Permission.INVENTORY_VIEW)
+@RequirePermissions(
+  Permission.ORDERS_MANAGE,
+  Permission.ORDERS_CREATE,
+  Permission.INVENTORY_VIEW,
+)
 export class ProductsController {
   constructor(private readonly productsService: ProductsService) {}
 

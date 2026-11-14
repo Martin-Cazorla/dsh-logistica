@@ -27,6 +27,8 @@ export enum Permission {
 
   // Pedidos
   ORDERS_VIEW = 'ORDERS_VIEW',
+  /** Alta de pedidos (el Vendedor sólo con él mismo como vendedor). */
+  ORDERS_CREATE = 'ORDERS_CREATE',
   ORDERS_MANAGE = 'ORDERS_MANAGE',
 
   // Picking
@@ -38,12 +40,19 @@ export enum Permission {
 
   // Inventario
   INVENTORY_VIEW = 'INVENTORY_VIEW',
+  /**
+   * Sólo stock DISPONIBLE por producto y depósito, sin ubicaciones, racks,
+   * pasillos ni lotes (consulta del Vendedor).
+   */
+  STOCK_AVAILABILITY_VIEW = 'STOCK_AVAILABILITY_VIEW',
   INVENTORY_RELOCATE = 'INVENTORY_RELOCATE',
   INVENTORY_COUNT = 'INVENTORY_COUNT',
   INVENTORY_MODIFY = 'INVENTORY_MODIFY',
   WAREHOUSE_CONFIG = 'WAREHOUSE_CONFIG',
 
   // Maestros
+  /** Lectura de clientes (el Vendedor sólo ve los suyos y los sin asignar). */
+  CUSTOMERS_VIEW = 'CUSTOMERS_VIEW',
   CUSTOMERS_MANAGE = 'CUSTOMERS_MANAGE',
   FLEET_MANAGE = 'FLEET_MANAGE',
 
@@ -72,6 +81,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, ReadonlySet<Permission>> = {
   [UserRole.PICKER]: new Set([
     Permission.PICKING_EXECUTE,
     Permission.INVENTORY_VIEW,
+    Permission.STOCK_AVAILABILITY_VIEW,
     Permission.INVENTORY_RELOCATE,
     // Puede contar, pero el ajuste resultante requiere aprobación
     Permission.INVENTORY_COUNT,
@@ -81,6 +91,21 @@ export const ROLE_PERMISSIONS: Record<UserRole, ReadonlySet<Permission>> = {
   [UserRole.HELPER]: new Set([
     Permission.ROUTES_VIEW_OWN,
     Permission.DELIVERY_CHECK,
+  ]),
+
+  // Vendedor: stock en SOLO LECTURA de todos los depósitos, sus pedidos, sus
+  // clientes y su propio análisis por zona. Ningún permiso de escritura de
+  // inventario (reubicar, contar, ajustar, ingresar, configurar ubicaciones).
+  // Los montos sólo se exponen si el módulo de ventas está activo
+  // (canViewMoney exige SALES_VIEW y SALES_MODULE_ENABLED=true).
+  [UserRole.SELLER]: new Set([
+    // No INVENTORY_VIEW: ese permiso también expone ubicaciones y contenedores.
+    Permission.STOCK_AVAILABILITY_VIEW,
+    Permission.ORDERS_VIEW,
+    Permission.ORDERS_CREATE,
+    Permission.CUSTOMERS_VIEW,
+    Permission.ANALYTICS_VIEW,
+    Permission.SALES_VIEW,
   ]),
 
   [UserRole.DRIVER]: new Set([
@@ -103,6 +128,11 @@ export function hasAnyPermission(
 }
 
 /** Roles con alcance "global" sobre la operativa (no limitado a lo asignado). */
+/** El Vendedor ve sólo sus propios datos comerciales. */
+export function isSeller(role: UserRole): boolean {
+  return role === UserRole.SELLER;
+}
+
 export function isSupervisor(role: UserRole): boolean {
   return role === UserRole.ADMIN || role === UserRole.WAREHOUSE_MANAGER;
 }

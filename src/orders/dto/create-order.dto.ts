@@ -61,6 +61,11 @@ export class CreateOrderDto {
   @IsUUID()
   sourceWarehouseId: string; // Depósito de origen
 
+  /**
+   * Vendedor del pedido. Obligatorio para Administrador y Gestor (rol
+   * Vendedor). Si carga un Vendedor se ignora y se usa el usuario logueado;
+   * enviar otro vendedor responde 403. Validado en OrdersService.
+   */
   @IsUUID()
   @IsOptional()
   sellerId?: string;

@@ -17,6 +17,7 @@ import {
 } from '@nestjs/common';
 import { InventoryService } from './inventory.service';
 import { StockRequestsService } from './services/stock-requests.service';
+import { StockAvailabilityService } from './services/stock-availability.service';
 import { InboundDto, CreateWarehouseDto } from './dto/inbound.dto';
 import { CreateManualStockDto } from './dto/create-manual-stock.dto';
 import { TransferStockDto } from './dto/transfer-stock.dto';
@@ -53,7 +54,24 @@ export class InventoryController {
   constructor(
     private readonly inventoryService: InventoryService,
     private readonly stockRequestsService: StockRequestsService,
+    private readonly stockAvailabilityService: StockAvailabilityService,
   ) {}
+
+  /**
+   * Consulta de stock DISPONIBLE por depósito (sin ubicaciones). Pantalla del
+   * Vendedor; sólo lectura.
+   */
+  @Get('availability')
+  @RequirePermissions(
+    Permission.STOCK_AVAILABILITY_VIEW,
+    Permission.INVENTORY_VIEW,
+  )
+  getAvailability(
+    @Query('search') search?: string,
+    @Query('limit', new DefaultValuePipe(40), ParseIntPipe) limit?: number,
+  ) {
+    return this.stockAvailabilityService.search({ search, limit });
+  }
 
   // ---------------------------------------------------------------------------
   // OCUPACIÓN Y DEPÓSITOS
@@ -68,6 +86,8 @@ export class InventoryController {
   @Get('warehouses')
   @RequirePermissions(
     Permission.INVENTORY_VIEW,
+    Permission.STOCK_AVAILABILITY_VIEW,
+    Permission.ORDERS_CREATE,
     Permission.ORDERS_MANAGE,
     Permission.DASHBOARD_VIEW,
   )

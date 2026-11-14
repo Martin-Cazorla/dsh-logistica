@@ -77,6 +77,19 @@ async function main() {
     },
   });
 
+  await prisma.user.upsert({
+    where: { email: 'vendedor1@dshlogistica.com' },
+    update: {},
+    create: {
+      email: 'vendedor1@dshlogistica.com',
+      password: hashedPassword,
+      firstName: 'Vendedor',
+      lastName: 'Calle 1',
+      role: UserRole.SELLER,
+      isActive: true,
+    },
+  });
+
   await prisma.truck.upsert({
     where: { plate: 'AB123CD' },
     update: {},
@@ -91,7 +104,7 @@ async function main() {
   });
 
   console.log(
-    '✅ 5 usuarios (Admin, Gestor, Picker, Peón, Chofer) y 1 camión de ejemplo creados.',
+    '✅ 6 usuarios (Admin, Gestor, Picker, Peón, Chofer, Vendedor) y 1 camión de ejemplo creados.',
   );
 
   // ==========================================

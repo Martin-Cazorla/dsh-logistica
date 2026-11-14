@@ -2,6 +2,11 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { customersService } from '@/services/customers.service';
+import { usersService } from '@/services/users.service';
+import ProtectedRoute from '@/components/ProtectedRoute';
+import { useAuth } from '@/context/AuthContext';
+import { can } from '@/lib/permissions';
+import { ManagedUser } from '@/types/users.types';
 import {
   Customer,
   CreateCustomerPayload,
@@ -30,6 +35,21 @@ const formatAddress = (a: {
 }) => `${a.alias ? a.alias + ' · ' : ''}${a.address}, ${a.city}`;
 
 export default function CustomersPage() {
+  return (
+    <ProtectedRoute requiredPermissions={['CUSTOMERS_VIEW', 'CUSTOMERS_MANAGE']}>
+      <CustomersScreen />
+    </ProtectedRoute>
+  );
+}
+
+const sellerName = (u?: { firstName: string; lastName: string } | null) =>
+  u ? `${u.firstName} ${u.lastName}`.trim() : null;
+
+function CustomersScreen() {
+  const { user } = useAuth();
+  // El Vendedor ve su cartera en sólo lectura (el backend filtra y bloquea).
+  const canManage = can(user?.role, 'CUSTOMERS_MANAGE');
+  const [sellers, setSellers] = useState<ManagedUser[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -79,6 +99,15 @@ export default function CustomersPage() {
     fetchCustomers();
   }, [fetchCustomers]);
 
+  // Vendedores disponibles para el selector de "vendedor de cuenta"
+  useEffect(() => {
+    if (!canManage) return;
+    usersService
+      .list({ role: 'SELLER', isActive: true })
+      .then(setSellers)
+      .catch(() => setSellers([]));
+  }, [canManage]);
+
   const handleOpenModal = (customer?: Customer) => {
     if (customer) {
       setSelectedCustomer(customer);
@@ -94,6 +123,7 @@ export default function CustomersPage() {
         taxCondition: customer.taxCondition,
         logisticsFee: Number(customer.logisticsFee),
         isActive: customer.isActive,
+        accountSellerId: customer.accountSellerId ?? null,
         // Sólo los campos que acepta el backend (id identifica la dirección existente)
         addresses:
           customer.addresses.length > 0
@@ -125,6 +155,7 @@ export default function CustomersPage() {
         taxCondition: TaxCondition.RESPONSABLE_INSCRIPTO,
         logisticsFee: 0,
         isActive: true,
+        accountSellerId: null,
         addresses: [emptyAddress(true)],
       });
     }
@@ -227,12 +258,14 @@ export default function CustomersPage() {
             del WMS.
           </p>
         </div>
-        <button
-          onClick={() => handleOpenModal()}
-          className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold px-4 py-2 rounded-lg transition-colors flex items-center justify-center gap-2"
-        >
-          <span>+ Nuevo Cliente</span>
-        </button>
+        {canManage && (
+          <button
+            onClick={() => handleOpenModal()}
+            className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold px-4 py-2 rounded-lg transition-colors flex items-center justify-center gap-2"
+          >
+            <span>+ Nuevo Cliente</span>
+          </button>
+        )}
       </div>
 
       {/* FILTROS Y BÚSQUEDA */}
@@ -265,14 +298,15 @@ export default function CustomersPage() {
                   <th className="p-4">CONTACTO</th>
                   <th className="p-4">ENTREGA</th>
                   <th className="p-4">TIPO / TARIFA</th>
+                  <th className="p-4">VENDEDOR DE CUENTA</th>
                   <th className="p-4">ESTADO</th>
-                  <th className="p-4 text-right">ACCIONES</th>
+                  {canManage && <th className="p-4 text-right">ACCIONES</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
                 {customers.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="p-6 text-center text-slate-500">
+                    <td colSpan={canManage ? 9 : 8} className="p-6 text-center text-slate-500">
                       No se encontraron clientes registrados.
                     </td>
                   </tr>
@@ -341,6 +375,11 @@ export default function CustomersPage() {
                           ${Number(c.logisticsFee).toFixed(2)}
                         </div>
                       </td>
+                      <td className="p-4 text-xs">
+                        {sellerName(c.accountSeller) ?? (
+                          <span className="text-slate-500">Sin vendedor asignado</span>
+                        )}
+                      </td>
                       <td className="p-4">
                         <span
                           className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
@@ -352,6 +391,7 @@ export default function CustomersPage() {
                           {c.isActive ? 'Activo' : 'Inactivo'}
                         </span>
                       </td>
+                      {canManage && (
                       <td className="p-4 text-right space-x-2">
                         <button
                           onClick={() => handleOpenModal(c)}
@@ -370,6 +410,7 @@ export default function CustomersPage() {
                           {c.isActive ? 'Baja' : 'Alta'}
                         </button>
                       </td>
+                      )}
                     </tr>
                   ))
                 )}
@@ -518,6 +559,42 @@ export default function CustomersPage() {
                     className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-sm text-white focus:border-amber-500"
                   />
                 </div>
+              </div>
+
+              <div className="border-t border-slate-800 pt-4 mt-2">
+                <label className="block">
+                  <span className="text-xs text-slate-400 block mb-1">
+                    Vendedor de cuenta
+                  </span>
+                  <select
+                    className={inputCls}
+                    value={formData.accountSellerId ?? ''}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        accountSellerId: e.target.value || null,
+                      })
+                    }
+                  >
+                    <option value="">Sin vendedor asignado</option>
+                    {sellers.map((sl) => (
+                      <option key={sl.id} value={sl.id}>
+                        {sl.fullName}
+                      </option>
+                    ))}
+                    {/* Vendedor actual inactivo: se muestra para no perderlo */}
+                    {formData.accountSellerId &&
+                      !sellers.some((sl) => sl.id === formData.accountSellerId) &&
+                      selectedCustomer?.accountSeller && (
+                        <option value={formData.accountSellerId}>
+                          {sellerName(selectedCustomer.accountSeller)} (inactivo)
+                        </option>
+                      )}
+                  </select>
+                  <span className="text-[11px] text-slate-500 block mt-1">
+                    Se precarga como vendedor en los pedidos nuevos de este cliente.
+                  </span>
+                </label>
               </div>
 
               <div className="border-t border-slate-800 pt-4 mt-2">

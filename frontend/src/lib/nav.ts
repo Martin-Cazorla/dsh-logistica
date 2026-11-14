@@ -13,8 +13,9 @@ export interface NavItem {
 /** Navegación única para Sidebar (escritorio) y OperatorShell (móvil). */
 export const NAV_ITEMS: NavItem[] = [
   { label: 'Dashboard', href: '/dashboard', permissions: ['DASHBOARD_VIEW'], group: 'Gestión' },
-  { label: 'Pedidos', href: '/dashboard/orders', permissions: ['ORDERS_MANAGE'], group: 'Gestión' },
-  { label: 'Clientes', href: '/dashboard/customers', permissions: ['CUSTOMERS_MANAGE'], group: 'Gestión' },
+  { label: 'Consulta de stock', href: '/sales/stock', permissions: ['STOCK_AVAILABILITY_VIEW'], group: 'Gestión' },
+  { label: 'Pedidos', href: '/dashboard/orders', permissions: ['ORDERS_CREATE'], group: 'Gestión' },
+  { label: 'Clientes', href: '/dashboard/customers', permissions: ['CUSTOMERS_VIEW', 'CUSTOMERS_MANAGE'], group: 'Gestión' },
   { label: 'Análisis por zona', href: '/dashboard/analytics', permissions: ['ANALYTICS_VIEW'], group: 'Gestión' },
   { label: 'Zonas de venta', href: '/dashboard/zones', permissions: ['CUSTOMERS_MANAGE'], group: 'Gestión' },
   { label: 'Inventario / Ubicaciones', href: '/dashboard/inventory', permissions: ['INVENTORY_MODIFY'], group: 'Gestión' },

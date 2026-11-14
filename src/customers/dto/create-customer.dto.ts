@@ -76,6 +76,14 @@ export class CreateCustomerDto {
   @IsOptional()
   transportId?: string;
 
+  /**
+   * Vendedor de cuenta (usuario con rol Vendedor). null lo desasigna.
+   * Sólo Administrador y Gestor pueden crear / editar clientes.
+   */
+  @IsUUID('all')
+  @IsOptional()
+  accountSellerId?: string | null;
+
   @ValidateNested({ each: true })
   @Type(() => CreateCustomerAddressDto)
   @ArrayMinSize(1, { message: 'Debe ingresar al menos una dirección' })

@@ -103,7 +103,13 @@ function AnalyticsScreen() {
       .filterOptions()
       .then((o) => {
         setOptions(o);
-        setFilters((f) => ({ from: o.defaults.from, to: o.defaults.to, ...f }));
+        setFilters((f) => ({
+          from: o.defaults.from,
+          to: o.defaults.to,
+          ...f,
+          // El Vendedor queda fijo a sus datos (el backend lo fuerza igual)
+          ...(o.sellerLocked && o.sellers[0] ? { sellerId: o.sellers[0].id } : {}),
+        }));
       })
       .catch((err) => setError(getApiErrorMessage(err, 'No se pudieron cargar los filtros.')));
   }, []);
@@ -229,12 +235,21 @@ function AnalyticsScreen() {
             <select
               className={inputClass}
               value={filters.sellerId ?? ''}
+              disabled={options?.sellerLocked}
+              title={options?.sellerLocked ? 'Usted ve sólo sus propios pedidos' : undefined}
               onChange={(e) => setFilters((f) => ({ ...f, sellerId: e.target.value || undefined }))}
             >
-              <option value="">Todos</option>
-              <option value="none">Sin vendedor asignado</option>
+              {!options?.sellerLocked && (
+                <>
+                  <option value="">Todos</option>
+                  <option value="none">Sin vendedor asignado</option>
+                </>
+              )}
               {options?.sellers.map((s) => (
-                <option key={s.id} value={s.id}>{s.name}</option>
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                  {s.isActive === false ? ' (inactivo)' : ''}
+                </option>
               ))}
             </select>
           </Field>
@@ -368,6 +383,9 @@ function AnalyticsScreen() {
                         <th className="px-4 py-2">{LEVEL_SINGULAR[data.level]}</th>
                         <th className="px-3 py-2 text-right">Pedidos</th>
                         <th className="px-3 py-2 text-right">Clientes</th>
+                        <th className="px-3 py-2 text-right" title="Vendedores distintos con pedidos en el período. 0 = zona sin cobertura comercial">
+                          Vendedores activos
+                        </th>
                         <th className="px-3 py-2 text-right">Bultos</th>
                         <th className="px-3 py-2 text-right">Kg</th>
                         <th className="px-3 py-2 text-right">m³</th>
@@ -393,6 +411,12 @@ function AnalyticsScreen() {
                             </td>
                             <td className="px-3 py-2.5 text-right tabular-nums">{formatNumber(row.metrics.orders)}</td>
                             <td className="px-3 py-2.5 text-right tabular-nums">{formatNumber(row.metrics.customers)}</td>
+                            <td
+                              className={`px-3 py-2.5 text-right tabular-nums ${row.metrics.activeSellers === 0 ? 'font-bold text-red-300' : ''}`}
+                              title={row.metrics.activeSellers === 0 ? 'Sin cobertura: ningún vendedor con pedidos en el período' : undefined}
+                            >
+                              {row.metrics.activeSellers === 0 ? 'Sin cobertura' : formatNumber(row.metrics.activeSellers)}
+                            </td>
                             <td className="px-3 py-2.5 text-right tabular-nums">{formatNumber(row.metrics.bultos)}</td>
                             <td className="px-3 py-2.5 text-right tabular-nums">{formatNumber(row.metrics.weightKg, 1)}</td>
                             <td className="px-3 py-2.5 text-right tabular-nums">{formatNumber(row.metrics.volumeM3, 2)}</td>
@@ -419,7 +443,7 @@ function AnalyticsScreen() {
                           </tr>
                           {data.level === 'locality' && expanded === row.key && (
                             <tr className="bg-slate-900/60">
-                              <td colSpan={moneyVisible ? 10 : 9} className="px-4 py-3">
+                              <td colSpan={moneyVisible ? 11 : 10} className="px-4 py-3">
                                 <LocalityDetail row={row} moneyVisible={moneyVisible} />
                               </td>
                             </tr>
@@ -433,6 +457,9 @@ function AnalyticsScreen() {
                         <td className="px-3 py-2.5 text-right tabular-nums">{formatNumber(data.totals.orders)}</td>
                         <td className="px-3 py-2.5 text-right tabular-nums" title="Clientes distintos del nivel (un cliente con pedidos en varias filas cuenta una vez)">
                           {formatNumber(data.totals.customers)}
+                        </td>
+                        <td className="px-3 py-2.5 text-right tabular-nums" title="Vendedores distintos del nivel">
+                          {formatNumber(data.totals.activeSellers)}
                         </td>
                         <td className="px-3 py-2.5 text-right tabular-nums">{formatNumber(data.totals.bultos)}</td>
                         <td className="px-3 py-2.5 text-right tabular-nums">{formatNumber(data.totals.weightKg, 1)}</td>

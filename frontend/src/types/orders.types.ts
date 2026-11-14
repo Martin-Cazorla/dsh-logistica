@@ -37,6 +37,8 @@ export interface OrderListItem {
   };
   sourceWarehouse: { id: string; name: string; code: string };
   createdBy: { id: string; firstName: string; lastName: string } | null;
+  /** null en pedidos anteriores a la obligatoriedad: "Sin vendedor asignado". */
+  seller: { id: string; firstName: string; lastName: string } | null;
   pickerAssignments: Array<{
     assignedAt: string;
     user: { id: string; firstName: string; lastName: string };
@@ -80,6 +82,8 @@ export interface CreateOrderItemPayload {
 
 export interface CreateOrderPayload {
   orderNumber?: string;
+  /** Obligatorio para Administrador y Gestor; el Vendedor siempre carga a su nombre. */
+  sellerId?: string;
   customerId: string;
   addressId: string;
   sourceWarehouseId: string;

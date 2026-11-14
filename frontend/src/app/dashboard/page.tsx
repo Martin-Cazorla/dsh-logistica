@@ -4,6 +4,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
+import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/context/AuthContext';
 import { routesService } from '@/services/routes.service';
 import { inventoryService } from '@/services/inventory.service';
@@ -34,6 +35,14 @@ const PIPELINE: OrderStatus[] = [
 ];
 
 export default function DashboardPage() {
+  return (
+    <ProtectedRoute requiredPermissions={['DASHBOARD_VIEW']}>
+      <DashboardScreen />
+    </ProtectedRoute>
+  );
+}
+
+function DashboardScreen() {
   const { user } = useAuth();
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
   const [warehouses, setWarehouses] = useState<WarehouseOccupancy[]>([]);

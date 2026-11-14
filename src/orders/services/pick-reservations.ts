@@ -88,3 +88,58 @@ export async function releasePendingReservations(tx: Tx, orderId: string) {
     });
   }
 }
+
+// =============================================================================
+// STOCK DISPONIBLE (fuente única)
+// =============================================================================
+
+export interface AvailableStockRow {
+  productId: string;
+  warehouseId: string;
+  available: number;
+}
+
+type QueryDb = { $queryRaw: Tx['$queryRaw'] };
+
+/**
+ * Disponible = Σ (quantity − reserved) en ubicaciones NO bloqueadas.
+ *
+ * Es exactamente lo que reserveStock() / la planificación del picking pueden
+ * tomar: reserveStock exige `quantity - reserved >= n` y el plan de recorrido
+ * ignora ubicaciones bloqueadas. Lo usan el catálogo de pedidos, la consulta
+ * de stock del Vendedor y la validación del alta de pedidos, para que todos
+ * muestren el mismo número.
+ */
+export async function fetchAvailableStock(
+  db: QueryDb,
+  filter: { productIds?: string[]; warehouseIds?: string[] } = {},
+): Promise<AvailableStockRow[]> {
+  const conds: Prisma.Sql[] = [Prisma.sql`l.is_blocked = false`];
+  if (filter.productIds) {
+    if (filter.productIds.length === 0) return [];
+    conds.push(Prisma.sql`i.product_id = ANY(${filter.productIds}::uuid[])`);
+  }
+  if (filter.warehouseIds) {
+    if (filter.warehouseIds.length === 0) return [];
+    conds.push(
+      Prisma.sql`i.warehouse_id = ANY(${filter.warehouseIds}::uuid[])`,
+    );
+  }
+
+  const rows = await db.$queryRaw<
+    Array<{ product_id: string; warehouse_id: string; available: number }>
+  >`
+    SELECT i.product_id, i.warehouse_id,
+           GREATEST(SUM(i.quantity - i.reserved), 0)::int AS available
+    FROM inventories i
+    JOIN locations l ON l.id = i.location_id
+    WHERE ${Prisma.join(conds, ' AND ')}
+    GROUP BY i.product_id, i.warehouse_id
+  `;
+
+  return rows.map((r) => ({
+    productId: r.product_id,
+    warehouseId: r.warehouse_id,
+    available: Number(r.available),
+  }));
+}

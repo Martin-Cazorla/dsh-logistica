@@ -15,15 +15,18 @@ export type Permission =
   | 'DASHBOARD_VIEW'
   | 'AUDIT_VIEW'
   | 'ORDERS_VIEW'
+  | 'ORDERS_CREATE'
   | 'ORDERS_MANAGE'
   | 'PICKING_ASSIGN'
   | 'PICKING_EXECUTE'
   | 'CHECKING_EXECUTE'
   | 'INVENTORY_VIEW'
+  | 'STOCK_AVAILABILITY_VIEW'
   | 'INVENTORY_RELOCATE'
   | 'INVENTORY_COUNT'
   | 'INVENTORY_MODIFY'
   | 'WAREHOUSE_CONFIG'
+  | 'CUSTOMERS_VIEW'
   | 'CUSTOMERS_MANAGE'
   | 'FLEET_MANAGE'
   | 'ROUTES_MANAGE'
@@ -40,15 +43,18 @@ const ALL: Permission[] = [
   'DASHBOARD_VIEW',
   'AUDIT_VIEW',
   'ORDERS_VIEW',
+  'ORDERS_CREATE',
   'ORDERS_MANAGE',
   'PICKING_ASSIGN',
   'PICKING_EXECUTE',
   'CHECKING_EXECUTE',
   'INVENTORY_VIEW',
+  'STOCK_AVAILABILITY_VIEW',
   'INVENTORY_RELOCATE',
   'INVENTORY_COUNT',
   'INVENTORY_MODIFY',
   'WAREHOUSE_CONFIG',
+  'CUSTOMERS_VIEW',
   'CUSTOMERS_MANAGE',
   'FLEET_MANAGE',
   'ROUTES_MANAGE',
@@ -66,10 +72,19 @@ const ROLE_PERMISSIONS: Record<UserRole, ReadonlySet<Permission>> = {
   PICKER: new Set<Permission>([
     'PICKING_EXECUTE',
     'INVENTORY_VIEW',
+    'STOCK_AVAILABILITY_VIEW',
     'INVENTORY_RELOCATE',
     'INVENTORY_COUNT',
   ]),
   HELPER: new Set<Permission>(['ROUTES_VIEW_OWN', 'DELIVERY_CHECK']),
+  SELLER: new Set<Permission>([
+    'STOCK_AVAILABILITY_VIEW',
+    'ORDERS_VIEW',
+    'ORDERS_CREATE',
+    'CUSTOMERS_VIEW',
+    'ANALYTICS_VIEW',
+    'SALES_VIEW',
+  ]),
   DRIVER: new Set<Permission>([
     'ROUTES_VIEW_OWN',
     'ROUTES_REORDER',
@@ -99,6 +114,7 @@ export const ROLE_LABELS: Record<UserRole, string> = {
   PICKER: 'Picker',
   HELPER: 'Peón / Cadete',
   DRIVER: 'Chofer',
+  SELLER: 'Vendedor',
 };
 
 export const ROLE_DESCRIPTIONS: Record<UserRole, string> = {
@@ -108,6 +124,8 @@ export const ROLE_DESCRIPTIONS: Record<UserRole, string> = {
   PICKER:
     'Picking de pedidos asignados, reubicación y conteo de stock (ajustes con aprobación).',
   HELPER: 'Visualiza su vuelta y valida bultos en la descarga en el cliente.',
+  SELLER:
+    'Consulta el stock disponible (sólo lectura), carga sus pedidos y ve sus clientes y su análisis por zona.',
   DRIVER:
     'Visualiza y reordena su vuelta, controla la carga y valida la descarga.',
 };

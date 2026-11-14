@@ -52,7 +52,7 @@ interface DraftLine {
 
 export default function OrdersPage() {
   return (
-    <ProtectedRoute requiredPermissions={['ORDERS_MANAGE']}>
+    <ProtectedRoute requiredPermissions={['ORDERS_CREATE']}>
       <OrdersScreen />
     </ProtectedRoute>
   );
@@ -74,6 +74,8 @@ function OrdersScreen() {
   const [assignTarget, setAssignTarget] = useState<OrderListItem | null>(null);
 
   const showMoney = salesEnabled && can(user?.role, 'SALES_VIEW');
+  const canManage = can(user?.role, 'ORDERS_MANAGE');
+  const isSellerUser = user?.role === 'SELLER';
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -121,7 +123,11 @@ function OrdersScreen() {
     <div>
       <PageHeader
         title="Pedidos"
-        subtitle="Alta de pedidos, asignación de pickers y seguimiento hasta la entrega."
+        subtitle={
+          isSellerUser
+            ? 'Sus pedidos. Sólo se puede vender lo que hay disponible en el depósito elegido.'
+            : 'Alta de pedidos, asignación de pickers y seguimiento hasta la entrega.'
+        }
         actions={<Button onClick={() => setCreateOpen(true)}>+ Nuevo pedido</Button>}
       />
 
@@ -189,7 +195,8 @@ function OrdersScreen() {
                 <th className="px-4 py-3">Pedido</th>
                 <th className="px-4 py-3">Cliente / Entrega</th>
                 <th className="px-4 py-3">Carga</th>
-                <th className="px-4 py-3">Pickers</th>
+                <th className="px-4 py-3">Vendedor</th>
+                {canManage && <th className="px-4 py-3">Pickers</th>}
                 <th className="px-4 py-3">Estado</th>
                 {showMoney && <th className="px-4 py-3 text-right">Total</th>}
                 <th className="px-4 py-3 text-right">Acciones</th>
@@ -216,10 +223,19 @@ function OrdersScreen() {
                     {formatNumber(Number(o.totalVolumeM3), 2)} m³
                   </td>
                   <td className="px-4 py-3 text-xs text-slate-300">
+                    {o.seller ? (
+                      `${o.seller.firstName} ${o.seller.lastName}`
+                    ) : (
+                      <span className="text-slate-500">Sin vendedor asignado</span>
+                    )}
+                  </td>
+                  {canManage && (
+                  <td className="px-4 py-3 text-xs text-slate-300">
                     {o.pickerAssignments.length === 0
                       ? <span className="text-slate-500">Sin asignar</span>
                       : o.pickerAssignments.map((a) => `${a.user.firstName} ${a.user.lastName}`).join(', ')}
                   </td>
+                  )}
                   <td className="px-4 py-3">
                     <Badge tone={STATUS_TONES[o.status]}>{ORDER_STATUS_LABELS[o.status]}</Badge>
                     {o.route && <p className="mt-1 text-[11px] text-sky-300">Hoja {o.route.code}</p>}
@@ -231,12 +247,12 @@ function OrdersScreen() {
                   )}
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-2">
-                      {(o.status === 'PENDING' || o.status === 'IN_PICKING') && (
+                      {canManage && (o.status === 'PENDING' || o.status === 'IN_PICKING') && (
                         <Button size="sm" variant="secondary" onClick={() => setAssignTarget(o)}>
                           Pickers
                         </Button>
                       )}
-                      {(o.status === 'PENDING' || o.status === 'IN_PICKING') && (
+                      {canManage && (o.status === 'PENDING' || o.status === 'IN_PICKING') && (
                         <Button size="sm" variant="danger" onClick={() => cancelOrder(o)}>
                           Cancelar
                         </Button>
@@ -256,9 +272,13 @@ function OrdersScreen() {
           onClose={() => setCreateOpen(false)}
           onCreated={async (order) => {
             setCreateOpen(false);
-            setSuccess(`Pedido ${order.orderNumber} creado. Asigne pickers para iniciar el armado.`);
+            setSuccess(
+              canManage
+                ? `Pedido ${order.orderNumber} creado. Asigne pickers para iniciar el armado.`
+                : `Pedido ${order.orderNumber} creado.`,
+            );
             await load();
-            setAssignTarget(order);
+            if (canManage) setAssignTarget(order);
           }}
         />
       )}
@@ -333,6 +353,10 @@ function CreateOrderModal({
 }) {
   const [customerSearch, setCustomerSearch] = useState('');
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const { user } = useAuth();
+  const isSellerUser = user?.role === 'SELLER';
+  const [sellers, setSellers] = useState<ManagedUser[]>([]);
+  const [sellerId, setSellerId] = useState('');
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [addressId, setAddressId] = useState('');
   const [warehouses, setWarehouses] = useState<{ id: string; name: string }[]>([]);
@@ -346,6 +370,19 @@ function CreateOrderModal({
   const [taxPct, setTaxPct] = useState('21');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Administrador / Gestor eligen el vendedor (rol Vendedor activo); el
+  // Vendedor carga siempre a su propio nombre.
+  useEffect(() => {
+    if (isSellerUser) {
+      setSellerId(user?.id ?? '');
+      return;
+    }
+    usersService
+      .list({ role: 'SELLER', isActive: true })
+      .then(setSellers)
+      .catch(() => setSellers([]));
+  }, [isSellerUser, user?.id]);
 
   useEffect(() => {
     inventoryService
@@ -420,13 +457,18 @@ function CreateOrderModal({
       setError('Las cantidades deben ser enteros mayores a 0.');
       return;
     }
+    if (!sellerId) {
+      setError('Seleccione el vendedor del pedido.');
+      return;
+    }
+    // No se vende lo que no hay: el backend también lo rechaza.
     const over = lines.filter((l) => l.bultos > l.product.availableBultos);
-    if (
-      over.length > 0 &&
-      !confirm(
-        `Stock disponible insuficiente para: ${over.map((l) => l.product.sku).join(', ')}. ¿Registrar el pedido igualmente? (quedará con faltantes en el picking)`,
-      )
-    ) {
+    if (over.length > 0) {
+      setError(
+        `Stock disponible insuficiente: ${over
+          .map((l) => `${l.product.sku} (pedido ${l.bultos}, disponible ${l.product.availableBultos})`)
+          .join(', ')}. Ajuste las cantidades.`,
+      );
       return;
     }
 
@@ -436,6 +478,7 @@ function CreateOrderModal({
         customerId: customer.id,
         addressId,
         sourceWarehouseId: warehouseId,
+        ...(isSellerUser ? {} : { sellerId }),
         deliveryDateFrom: deliveryFrom || undefined,
         deliveryDateTo: deliveryTo || undefined,
         notes: notes.trim() || undefined,
@@ -465,7 +508,14 @@ function CreateOrderModal({
           <Button variant="secondary" onClick={onClose}>
             Cancelar
           </Button>
-          <Button onClick={submit} loading={saving}>
+          <Button
+            onClick={submit}
+            loading={saving}
+            disabled={
+              !sellerId ||
+              lines.some((l) => l.bultos > l.product.availableBultos)
+            }
+          >
             Registrar pedido
           </Button>
         </>
@@ -504,6 +554,8 @@ function CreateOrderModal({
                             setCustomer(c);
                             const def = c.addresses.find((a) => a.isDefault) ?? c.addresses[0];
                             setAddressId(def?.id ?? '');
+                            // Precarga el vendedor de cuenta del cliente
+                            if (!isSellerUser) setSellerId(c.accountSellerId ?? '');
                           }}
                         >
                           <span className="font-bold text-white">{c.name}</span>
@@ -529,6 +581,28 @@ function CreateOrderModal({
               </select>
             </Field>
           )}
+
+          <Field label="Vendedor">
+            {isSellerUser ? (
+              <p className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200">
+                {user?.fullName} <span className="text-xs text-slate-500">(usted)</span>
+              </p>
+            ) : (
+              <select
+                className={inputClass}
+                value={sellerId}
+                onChange={(e) => setSellerId(e.target.value)}
+              >
+                <option value="">Seleccione el vendedor…</option>
+                {sellers.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.fullName}
+                    {customer?.accountSellerId === s.id ? ' · vendedor de cuenta' : ''}
+                  </option>
+                ))}
+              </select>
+            )}
+          </Field>
 
           <Field label="Depósito de origen">
             <select
@@ -604,11 +678,19 @@ function CreateOrderModal({
                   <li key={l.product.id} className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
                     <span className="min-w-0 flex-1 truncate">
                       <span className="font-mono font-bold text-amber-300">{l.product.sku}</span> {l.product.name}
+                      <span
+                        className={`block text-[11px] ${l.bultos > l.product.availableBultos ? 'font-bold text-red-400' : 'text-slate-500'}`}
+                      >
+                        Disponible en el depósito: {l.product.availableBultos}
+                        {l.bultos > l.product.availableBultos &&
+                          ` · supera el disponible por ${l.bultos - l.product.availableBultos}`}
+                      </span>
                     </span>
                     <input
                       type="number"
                       min={1}
-                      className={`${inputClass} w-20`}
+                      className={`${inputClass} w-20 ${l.bultos > l.product.availableBultos ? 'border-red-500 text-red-300' : ''}`}
+                      aria-invalid={l.bultos > l.product.availableBultos}
                       value={l.bultos}
                       onChange={(e) => {
                         const v = Math.max(1, Math.floor(Number(e.target.value) || 1));

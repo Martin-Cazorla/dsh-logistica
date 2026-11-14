@@ -17,6 +17,7 @@ enum UserRole {
   PICKER // Armador de pedidos
   HELPER // Peón / cadete de reparto
   DRIVER // Chofer
+  SELLER // Vendedor: consulta de stock (solo lectura), sus pedidos y sus clientes
 }
 
 enum OrderStatus {
@@ -101,6 +102,7 @@ model User {
   assignedOrders         Order[]                  @relation("PickerOrders")
   checkedOrders          Order[]                  @relation("CheckerOrders")
   salesOrders            Order[]                  @relation("SellerOrders")
+  accountCustomers       Customer[]               @relation("AccountSeller")
   createdOrders          Order[]                  @relation("OrderCreatedBy")
   routes                 Route[]                  @relation("DriverRoutes")
   helperRoutes           Route[]                  @relation("HelperRoutes")
@@ -394,9 +396,13 @@ model Customer {
 
   transportId String? @map("transport_id") @db.Uuid
 
-  transport Transport?        @relation(fields: [transportId], references: [id])
-  addresses CustomerAddress[]
-  orders    Order[]
+  // Vendedor de cuenta: se precarga como vendedor en los pedidos nuevos.
+  accountSellerId String? @map("account_seller_id") @db.Uuid
+
+  transport     Transport?        @relation(fields: [transportId], references: [id])
+  accountSeller User?             @relation("AccountSeller", fields: [accountSellerId], references: [id], onDelete: SetNull)
+  addresses     CustomerAddress[]
+  orders        Order[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -404,6 +410,7 @@ model Customer {
   @@index([cuit])
   @@index([customerNumber])
   @@index([isCritical])
+  @@index([accountSellerId])
   @@map("customers")
 }
 

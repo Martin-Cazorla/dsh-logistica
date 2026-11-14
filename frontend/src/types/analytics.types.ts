@@ -8,6 +8,8 @@ export type AnalyticsLevel = 'province' | 'zone' | 'locality';
 export interface ZoneMetrics {
   orders: number;
   customers: number;
+  /** Vendedores distintos con pedidos en la fila (sin "Sin vendedor"). */
+  activeSellers: number;
   bultos: number;
   weightKg: number;
   volumeM3: number;
@@ -79,7 +81,9 @@ export interface AnalyticsFilterOptions {
   defaults: { from: string; to: string; statuses: OrderStatus[] };
   statuses: OrderStatus[];
   warehouses: Array<{ id: string; name: string }>;
-  sellers: Array<{ id: string; name: string }>;
+  sellers: Array<{ id: string; name: string; isActive?: boolean }>;
+  /** true para el Vendedor: el análisis está fijo a sus propios datos. */
+  sellerLocked?: boolean;
 }
 
 export interface TopZoneItem {

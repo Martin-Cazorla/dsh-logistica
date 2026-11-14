@@ -44,7 +44,30 @@ export interface StockAdjustmentRecord {
  * Antes este archivo creaba su propia instancia sin interceptor: todas las
  * llamadas de inventario viajaban sin Authorization.
  */
+export interface StockAvailabilityResponse {
+  warehouses: Array<{ id: string; name: string }>;
+  items: Array<{
+    productId: string;
+    sku: string;
+    name: string;
+    unitsPerBox: number;
+    /** warehouseId -> bultos disponibles (físico − reservado). */
+    byWarehouse: Record<string, number>;
+    total: number;
+  }>;
+  generatedAt: string;
+}
+
 export const inventoryService = {
+  /** Stock DISPONIBLE por depósito, sin ubicaciones (consulta del Vendedor). */
+  async getAvailability(search?: string): Promise<StockAvailabilityResponse> {
+    const response = await api.get<StockAvailabilityResponse>(
+      '/inventory/availability',
+      { params: search ? { search } : {} },
+    );
+    return response.data;
+  },
+
   // Resumen de ocupación de depósitos (m³)
   async getWarehouseOccupancy(): Promise<WarehouseOccupancy[]> {
     const response = await api.get<WarehouseOccupancy[]>('/inventory/occupancy');

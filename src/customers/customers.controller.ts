@@ -30,21 +30,39 @@ export class CustomersController {
     return this.customersService.create(createCustomerDto, user);
   }
 
+  /** El Vendedor sólo recibe su cartera y los clientes sin vendedor de cuenta. */
   @Get()
-  @Roles(UserRole.ADMIN, UserRole.WAREHOUSE_MANAGER, UserRole.PICKER)
+  @Roles(
+    UserRole.ADMIN,
+    UserRole.WAREHOUSE_MANAGER,
+    UserRole.PICKER,
+    UserRole.SELLER,
+  )
   findAll(
+    @GetUser() user: AuthenticatedUser,
     @Query('search') search?: string,
     @Query('page') page?: number,
     @Query('limit') limit?: number,
     @Query('isActive') isActive?: boolean,
   ) {
-    return this.customersService.findAll({ search, page, limit, isActive });
+    return this.customersService.findAll(
+      { search, page, limit, isActive },
+      user,
+    );
   }
 
   @Get(':id')
-  @Roles(UserRole.ADMIN, UserRole.WAREHOUSE_MANAGER, UserRole.PICKER)
-  findOne(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.customersService.findOne(id);
+  @Roles(
+    UserRole.ADMIN,
+    UserRole.WAREHOUSE_MANAGER,
+    UserRole.PICKER,
+    UserRole.SELLER,
+  )
+  findOne(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    return this.customersService.findOne(id, user);
   }
 
   @Patch(':id')
