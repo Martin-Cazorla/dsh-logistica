@@ -207,6 +207,7 @@ function OrdersScreen() {
                   <td className="px-4 py-3">
                     <p className="font-bold text-white">{o.customer.name}</p>
                     <p className="text-xs text-slate-400">
+                      {o.deliveryAddress.alias ? `${o.deliveryAddress.alias} · ` : ''}
                       {o.deliveryAddress.address}, {o.deliveryAddress.city}
                     </p>
                   </td>
@@ -522,7 +523,7 @@ function CreateOrderModal({
                 <option value="">Seleccione…</option>
                 {customer.addresses.map((a) => (
                   <option key={a.id} value={a.id}>
-                    {a.address}, {a.city} ({a.province}){a.isDefault ? ' · principal' : ''}
+                    {a.alias ? `${a.alias} — ` : ''}{a.address}, {a.city} ({a.province}){a.isDefault ? ' · principal' : ''}
                   </option>
                 ))}
               </select>

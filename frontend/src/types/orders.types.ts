@@ -29,6 +29,7 @@ export interface OrderListItem {
   customer: { id: string; name: string; cuit: string };
   deliveryAddress: {
     id: string;
+    alias?: string | null;
     address: string;
     city: string;
     province: string;

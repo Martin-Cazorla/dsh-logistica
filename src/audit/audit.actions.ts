@@ -45,6 +45,11 @@ export const AuditAction = {
   ROUTE_STARTED: 'ROUTE_STARTED',
   ROUTE_COMPLETED: 'ROUTE_COMPLETED',
   ROUTE_CANCELLED: 'ROUTE_CANCELLED',
+
+  // Clientes
+  CUSTOMER_CREATED: 'CUSTOMER_CREATED',
+  CUSTOMER_UPDATED: 'CUSTOMER_UPDATED',
+  CUSTOMER_DEACTIVATED: 'CUSTOMER_DEACTIVATED',
 } as const;
 
 export type AuditActionType = (typeof AuditAction)[keyof typeof AuditAction];
@@ -60,6 +65,7 @@ export const AuditEntity = {
   TRUCK: 'TRUCK',
   ROUTE: 'ROUTE',
   ROUTE_STOP: 'ROUTE_STOP',
+  CUSTOMER: 'CUSTOMER',
 } as const;
 
 export type AuditEntityType = (typeof AuditEntity)[keyof typeof AuditEntity];

@@ -5,9 +5,29 @@ import { customersService } from '@/services/customers.service';
 import {
   Customer,
   CreateCustomerPayload,
+  CustomerAddressInput,
   TaxCondition,
   CustomerType,
 } from '@/types/customers.types';
+
+const emptyAddress = (isDefault = false): CustomerAddressInput => ({
+  alias: '',
+  address: '',
+  city: '',
+  province: '',
+  zipCode: '',
+  businessHours: '08:00 - 17:00',
+  isDefault,
+});
+
+const inputCls =
+  'w-full bg-slate-950 border border-slate-800 rounded p-2 text-sm text-white focus:border-amber-500';
+
+const formatAddress = (a: {
+  alias?: string | null;
+  address: string;
+  city: string;
+}) => `${a.alias ? a.alias + ' · ' : ''}${a.address}, ${a.city}`;
 
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -36,16 +56,7 @@ export default function CustomersPage() {
     taxCondition: TaxCondition.RESPONSABLE_INSCRIPTO,
     logisticsFee: 0,
     isActive: true,
-    addresses: [
-      {
-        address: '',
-        city: '',
-        province: '',
-        zipCode: '',
-        businessHours: '08:00 - 17:00',
-        isDefault: true,
-      },
-    ],
+    addresses: [emptyAddress(true)],
   });
 
   const fetchCustomers = useCallback(async () => {
@@ -83,19 +94,22 @@ export default function CustomersPage() {
         taxCondition: customer.taxCondition,
         logisticsFee: Number(customer.logisticsFee),
         isActive: customer.isActive,
+        // Sólo los campos que acepta el backend (id identifica la dirección existente)
         addresses:
           customer.addresses.length > 0
-            ? customer.addresses
-            : [
-                {
-                  address: '',
-                  city: '',
-                  province: '',
-                  zipCode: '',
-                  businessHours: '',
-                  isDefault: true,
-                },
-              ],
+            ? customer.addresses.map((a, i) => ({
+                id: a.id,
+                alias: a.alias ?? '',
+                address: a.address,
+                city: a.city,
+                province: a.province,
+                zipCode: a.zipCode,
+                businessHours: a.businessHours ?? '',
+                isDefault: customer.addresses.some((x) => x.isDefault)
+                  ? !!a.isDefault
+                  : i === 0,
+              }))
+            : [emptyAddress(true)],
       });
     } else {
       setSelectedCustomer(null);
@@ -111,34 +125,75 @@ export default function CustomersPage() {
         taxCondition: TaxCondition.RESPONSABLE_INSCRIPTO,
         logisticsFee: 0,
         isActive: true,
-        addresses: [
-          {
-            address: '',
-            city: '',
-            province: '',
-            zipCode: '',
-            businessHours: '08:00 - 17:00',
-            isDefault: true,
-          },
-        ],
+        addresses: [emptyAddress(true)],
       });
     }
     setIsModalOpen(true);
   };
 
+  // --- Direcciones (sucursales / locales) ---
+  const updateAddress = (
+    index: number,
+    patch: Partial<CustomerAddressInput>,
+  ) => {
+    setFormData((prev) => ({
+      ...prev,
+      addresses: prev.addresses.map((a, i) =>
+        i === index ? { ...a, ...patch } : a,
+      ),
+    }));
+  };
+
+  const setDefaultAddress = (index: number) => {
+    setFormData((prev) => ({
+      ...prev,
+      addresses: prev.addresses.map((a, i) => ({
+        ...a,
+        isDefault: i === index,
+      })),
+    }));
+  };
+
+  const addAddress = () => {
+    setFormData((prev) => ({
+      ...prev,
+      addresses: [...prev.addresses, emptyAddress(prev.addresses.length === 0)],
+    }));
+  };
+
+  const removeAddress = (index: number) => {
+    setFormData((prev) => {
+      if (prev.addresses.length <= 1) return prev;
+      const removed = prev.addresses[index];
+      const rest = prev.addresses.filter((_, i) => i !== index);
+      // Si se quita la principal, pasa a serlo la primera restante
+      if (removed.isDefault) rest[0] = { ...rest[0], isDefault: true };
+      return { ...prev, addresses: rest };
+    });
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const payload: CreateCustomerPayload = {
+      ...formData,
+      addresses: formData.addresses.map((a) => ({
+        ...a,
+        alias: a.alias?.trim() || undefined,
+        businessHours: a.businessHours?.trim() || undefined,
+      })),
+    };
     try {
       if (selectedCustomer) {
-        await customersService.update(selectedCustomer.id, formData);
+        await customersService.update(selectedCustomer.id, payload);
       } else {
-        await customersService.create(formData);
+        await customersService.create(payload);
       }
       setIsModalOpen(false);
       fetchCustomers();
     } catch (err: any) {
+      const msg = err?.response?.data?.message;
       alert(
-        err?.response?.data?.message ||
+        (Array.isArray(msg) ? msg.join('\n') : msg) ||
           'Ocurrió un error al guardar la información',
       );
     }
@@ -208,6 +263,7 @@ export default function CustomersPage() {
                   <th className="p-4">RAZÓN SOCIAL / NOMBRE</th>
                   <th className="p-4">CUIT</th>
                   <th className="p-4">CONTACTO</th>
+                  <th className="p-4">ENTREGA</th>
                   <th className="p-4">TIPO / TARIFA</th>
                   <th className="p-4">ESTADO</th>
                   <th className="p-4 text-right">ACCIONES</th>
@@ -216,7 +272,7 @@ export default function CustomersPage() {
               <tbody className="divide-y divide-slate-800">
                 {customers.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="p-6 text-center text-slate-500">
+                    <td colSpan={8} className="p-6 text-center text-slate-500">
                       No se encontraron clientes registrados.
                     </td>
                   </tr>
@@ -241,6 +297,36 @@ export default function CustomersPage() {
                         <div className="text-xs text-slate-500">
                           {c.phone || 'Sin tel.'}
                         </div>
+                      </td>
+                      <td className="p-4">
+                        {c.addresses.length > 0 ? (
+                          <>
+                            <div className="text-slate-200">
+                              {formatAddress(c.addresses[0])}
+                            </div>
+                            <div className="text-xs text-slate-500">
+                              {c.addresses[0].province}
+                              {c.addresses.length > 1 && (
+                                <span
+                                  title={c.addresses
+                                    .slice(1)
+                                    .map(formatAddress)
+                                    .join('\n')}
+                                  className="ml-2 inline-block bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 rounded"
+                                >
+                                  +{c.addresses.length - 1}{' '}
+                                  {c.addresses.length - 1 === 1
+                                    ? 'local'
+                                    : 'locales'}
+                                </span>
+                              )}
+                            </div>
+                          </>
+                        ) : (
+                          <span className="text-xs text-slate-500">
+                            Sin dirección
+                          </span>
+                        )}
                       </td>
                       <td className="p-4">
                         <span className="text-xs bg-slate-800 border border-slate-700 px-2 py-1 rounded text-slate-300">
@@ -430,58 +516,163 @@ export default function CustomersPage() {
               </div>
 
               <div className="border-t border-slate-800 pt-4 mt-2">
-                <h3 className="text-sm font-semibold text-amber-400 mb-2">
-                  Dirección Principal de Entrega
-                </h3>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="col-span-2">
-                    <label className="block text-xs text-slate-400 mb-1">
-                      Calle y Altura
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={formData.addresses[0]?.address || ''}
-                      onChange={(e) => {
-                        const newAddresses = [...formData.addresses];
-                        newAddresses[0].address = e.target.value;
-                        setFormData({ ...formData, addresses: newAddresses });
-                      }}
-                      className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-sm text-white focus:border-amber-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-slate-400 mb-1">
-                      Ciudad / Localidad
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={formData.addresses[0]?.city || ''}
-                      onChange={(e) => {
-                        const newAddresses = [...formData.addresses];
-                        newAddresses[0].city = e.target.value;
-                        setFormData({ ...formData, addresses: newAddresses });
-                      }}
-                      className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-sm text-white focus:border-amber-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-slate-400 mb-1">
-                      Provincia
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={formData.addresses[0]?.province || ''}
-                      onChange={(e) => {
-                        const newAddresses = [...formData.addresses];
-                        newAddresses[0].province = e.target.value;
-                        setFormData({ ...formData, addresses: newAddresses });
-                      }}
-                      className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-sm text-white focus:border-amber-500"
-                    />
-                  </div>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-amber-400">
+                    Direcciones de Entrega{' '}
+                    <span className="text-xs font-normal text-slate-500">
+                      ({formData.addresses.length}{' '}
+                      {formData.addresses.length === 1 ? 'local' : 'locales'})
+                    </span>
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={addAddress}
+                    className="text-xs bg-slate-800 hover:bg-slate-700 text-amber-400 px-3 py-1.5 rounded transition-colors"
+                  >
+                    + Agregar dirección
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  {formData.addresses.map((addr, idx) => (
+                    <div
+                      key={addr.id ?? `new-${idx}`}
+                      className={`rounded-lg border p-3 ${
+                        addr.isDefault
+                          ? 'border-amber-500/50 bg-amber-500/5'
+                          : 'border-slate-800 bg-slate-950/40'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-3 mb-2">
+                        <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
+                          <input
+                            type="radio"
+                            name="defaultAddress"
+                            checked={addr.isDefault}
+                            onChange={() => setDefaultAddress(idx)}
+                            className="accent-amber-500"
+                          />
+                          <span
+                            className={
+                              addr.isDefault
+                                ? 'text-amber-400 font-semibold'
+                                : 'text-slate-400'
+                            }
+                          >
+                            {addr.isDefault
+                              ? 'Principal'
+                              : 'Marcar como principal'}
+                          </span>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => removeAddress(idx)}
+                          disabled={formData.addresses.length <= 1}
+                          title={
+                            formData.addresses.length <= 1
+                              ? 'El cliente debe tener al menos una dirección'
+                              : 'Quitar dirección'
+                          }
+                          className="text-xs text-rose-400 hover:text-rose-300 disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          ✕ Quitar
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs text-slate-400 mb-1">
+                            Nombre del local (opcional)
+                          </label>
+                          <input
+                            type="text"
+                            maxLength={100}
+                            placeholder="Ej. Sucursal Centro"
+                            value={addr.alias ?? ''}
+                            onChange={(e) =>
+                              updateAddress(idx, { alias: e.target.value })
+                            }
+                            className={inputCls}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-slate-400 mb-1">
+                            Calle y Altura
+                          </label>
+                          <input
+                            type="text"
+                            required
+                            maxLength={255}
+                            value={addr.address}
+                            onChange={(e) =>
+                              updateAddress(idx, { address: e.target.value })
+                            }
+                            className={inputCls}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-slate-400 mb-1">
+                            Ciudad / Localidad
+                          </label>
+                          <input
+                            type="text"
+                            required
+                            maxLength={100}
+                            value={addr.city}
+                            onChange={(e) =>
+                              updateAddress(idx, { city: e.target.value })
+                            }
+                            className={inputCls}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-slate-400 mb-1">
+                            Provincia
+                          </label>
+                          <input
+                            type="text"
+                            required
+                            maxLength={100}
+                            value={addr.province}
+                            onChange={(e) =>
+                              updateAddress(idx, { province: e.target.value })
+                            }
+                            className={inputCls}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-slate-400 mb-1">
+                            Código Postal
+                          </label>
+                          <input
+                            type="text"
+                            required
+                            maxLength={20}
+                            value={addr.zipCode}
+                            onChange={(e) =>
+                              updateAddress(idx, { zipCode: e.target.value })
+                            }
+                            className={inputCls}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-slate-400 mb-1">
+                            Horario de Recepción
+                          </label>
+                          <input
+                            type="text"
+                            maxLength={150}
+                            placeholder="08:00 - 17:00"
+                            value={addr.businessHours ?? ''}
+                            onChange={(e) =>
+                              updateAddress(idx, { businessHours: e.target.value })
+                            }
+                            className={inputCls}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
 

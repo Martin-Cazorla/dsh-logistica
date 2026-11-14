@@ -405,12 +405,16 @@ model Customer {
 model CustomerAddress {
   id            String  @id @default(uuid()) @db.Uuid
   customerId    String  @map("customer_id") @db.Uuid
+  // Nombre o alias del local (ej. "Sucursal Centro")
+  alias         String? @db.VarChar(100)
   address       String  @db.VarChar(255)
   city          String  @db.VarChar(100)
   province      String  @db.VarChar(100)
   zipCode       String  @map("zip_code") @db.VarChar(20)
   businessHours String? @map("business_hours") @db.VarChar(150)
   isDefault     Boolean @default(false) @map("is_default")
+  // Baja lógica: una dirección con pedidos asociados no se borra, se desactiva
+  isActive      Boolean @default(true) @map("is_active")
 
   customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
   orders   Order[]

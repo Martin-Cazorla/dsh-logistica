@@ -60,4 +60,7 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   ROUTE_STARTED: 'Viaje iniciado',
   ROUTE_COMPLETED: 'Viaje finalizado',
   ROUTE_CANCELLED: 'Hoja cancelada',
+  CUSTOMER_CREATED: 'Cliente creado',
+  CUSTOMER_UPDATED: 'Cliente modificado',
+  CUSTOMER_DEACTIVATED: 'Cliente dado de baja',
 };

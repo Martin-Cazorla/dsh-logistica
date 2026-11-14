@@ -89,7 +89,7 @@ export class OrdersService {
 
     const [address, warehouse, products, customer] = await Promise.all([
       this.prisma.customerAddress.findFirst({
-        where: { id: dto.addressId, customerId: dto.customerId },
+        where: { id: dto.addressId, customerId: dto.customerId, isActive: true },
         select: { id: true },
       }),
       this.prisma.warehouse.findUnique({
