@@ -133,7 +133,7 @@ export class InventoryGateway
 
   handleConnection(client: AuthedSocket) {
     const user = client.data.user;
-    client.join(OCCUPANCY_ROOM);
+    void client.join(OCCUPANCY_ROOM);
     this.logger.debug(
       `Operario conectado: ${user?.fullName ?? 'desconocido'} (${client.id})`,
     );
@@ -164,7 +164,7 @@ export class InventoryGateway
         room.startsWith('container_') &&
         room !== containerRoom(containerId)
       ) {
-        client.leave(room);
+        void client.leave(room);
         const previousId = room.slice('container_'.length);
         this.releaseLocks(
           (lock, key) =>
@@ -173,7 +173,7 @@ export class InventoryGateway
       }
     }
 
-    client.join(containerRoom(containerId));
+    void client.join(containerRoom(containerId));
     client.emit('current_locks', this.getLocksForContainer(containerId));
     return { ok: true };
   }
@@ -186,7 +186,7 @@ export class InventoryGateway
     if (!isNonEmptyString(containerId)) {
       return { ok: false, error: 'containerId inválido' };
     }
-    client.leave(containerRoom(containerId));
+    void client.leave(containerRoom(containerId));
     this.releaseLocks(
       (lock, key) =>
         lock.socketId === client.id && key.startsWith(`${containerId}:`),
