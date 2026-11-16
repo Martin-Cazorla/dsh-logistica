@@ -388,8 +388,9 @@ describeDb('Picking: faltantes, cuarentena y reemplazos (integración)', () => {
     ]);
 
     const covered = [r1, r2].map((r) => r.shortageOutcome!.replacements.length);
-    expect(covered.sort()).toEqual([0, 1]);
-    expect([r1, r2].map((r) => r.shortageOutcome!.uncovered).sort()).toEqual([0, 1]);
+    const asc = (a: number, b: number) => a - b;
+    expect(covered.sort(asc)).toEqual([0, 1]);
+    expect([r1, r2].map((r) => r.shortageOutcome!.uncovered).sort(asc)).toEqual([0, 1]);
     expect(await inv(c.id)).toMatchObject({ quantity: 1, reserved: 1 });
     expect(await prisma.stockAdjustmentRequest.count()).toBe(2);
     // Invariante de la base: reserved <= quantity en todo el inventario

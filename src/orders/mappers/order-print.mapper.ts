@@ -214,7 +214,7 @@ export function toOrderPrintSheet(order: PrintSource): OrderPrintSheet {
         prepared: covered,
         missing: explained,
         details,
-        text: `${item.product.sku} - ${item.product.name}: se prepararon ${covered} de ${item.bultos} bultos (${details.join('; ')})`,
+        text: `${item.product.sku} - ${item.product.name}: se prepararon ${covered} de ${item.bultos} ${item.bultos === 1 ? 'bulto' : 'bultos'} (${details.join('; ')})`,
       });
     }
 
