@@ -7,7 +7,7 @@ import {
   ConflictException,
   ForbiddenException,
 } from '@nestjs/common';
-import { OrderStatus, Prisma, UserRole } from '@prisma/client';
+import { OrderStatus, PickTaskStatus, Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../../audit/audit.service';
 import { AuditAction, AuditEntity } from '../../audit/audit.actions';
@@ -155,10 +155,57 @@ export class OrderCheckingService {
           );
         }
 
+        // Faltante justificado: todas las tomas de la línea (originales y
+        // reemplazos) están cerradas, cada faltante tiene motivo y no quedó
+        // stock alternativo (si lo hubiera, existiría una tarea de reemplazo).
+        const tasks = await tx.pickTask.findMany({
+          where: { orderId, status: { not: PickTaskStatus.CANCELLED } },
+          select: {
+            orderItemId: true,
+            status: true,
+            quantity: true,
+            pickedQty: true,
+            shortReason: true,
+          },
+        });
+        const isJustified = (item: { id: string; bultos: number; pickedQty: number }) => {
+          const own = tasks.filter((t) => t.orderItemId === item.id);
+          if (own.length === 0) return false;
+          if (own.some((t) => t.status === PickTaskStatus.PENDING)) return false;
+          const shorts = own.filter((t) => t.status === PickTaskStatus.SHORT);
+          if (shorts.length === 0 || shorts.some((t) => !t.shortReason)) {
+            return false;
+          }
+          const unexplained =
+            item.bultos -
+            item.pickedQty -
+            shorts.reduce((acc, t) => acc + (t.quantity - t.pickedQty), 0);
+          return unexplained <= 0;
+        };
+
         const discrepancies: string[] = [];
+        const justifiedShortages: Array<{
+          orderItemId: string;
+          sku: string;
+          requested: number;
+          picked: number;
+        }> = [];
         for (const item of items) {
           const checked = counted.get(item.id) ?? 0;
-          if (item.pickedQty < item.bultos) {
+          if (item.pickedQty < item.bultos && isJustified(item)) {
+            if (checked !== item.pickedQty) {
+              discrepancies.push(
+                `${item.product.sku}: contado ${checked}, pickeado ${item.pickedQty}`,
+              );
+            } else {
+              justifiedShortages.push({
+                orderItemId: item.id,
+                sku: item.product.sku,
+                requested: item.bultos,
+                picked: item.pickedQty,
+              });
+            }
+          } else if (item.pickedQty < item.bultos) {
             discrepancies.push(
               `${item.product.sku}: pickeado ${item.pickedQty}/${item.bultos}`,
             );
@@ -206,6 +253,7 @@ export class OrderCheckingService {
                 checked: counted.get(i.id) ?? 0,
               })),
               notes: dto.notes ?? null,
+              justifiedShortages,
             },
           },
           tx,

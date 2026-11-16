@@ -113,6 +113,13 @@ function StockRequestsScreen() {
                     <Badge tone={r.type === 'COUNT' ? 'sky' : 'purple'}>
                       {r.type === 'COUNT' ? 'Conteo' : 'Descuento'}
                     </Badge>
+                    {r.heldQty > 0 && (
+                      <Badge tone="amber">
+                        {r.status === 'PENDING'
+                          ? `Faltante de picking · ${r.heldQty} en cuarentena`
+                          : 'Faltante de picking'}
+                      </Badge>
+                    )}
                     <span className="font-mono font-bold text-amber-300">{r.productSku}</span>
                     <span className="text-white">{r.productName}</span>
                   </div>

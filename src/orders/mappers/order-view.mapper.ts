@@ -1,6 +1,11 @@
 // dsh-logistica/src/orders/mappers/order-view.mapper.ts
 
-import { OrderStatus, PickTaskStatus, Prisma } from '@prisma/client';
+import {
+  OrderStatus,
+  PickShortReason,
+  PickTaskStatus,
+  Prisma,
+} from '@prisma/client';
 import { rankLocationsForRoute } from '../picking/pick-route';
 
 /**
@@ -11,6 +16,30 @@ import { rankLocationsForRoute } from '../picking/pick-route';
 const USER_NAME_SELECT = {
   select: { id: true, firstName: true, lastName: true },
 } as const;
+
+const WAREHOUSE_NAME_SELECT = {
+  select: { id: true, name: true },
+} as const;
+
+/**
+ * Depósitos que recorre el pedido, en el orden del recorrido. Los pedidos
+ * históricos sin tareas muestran su depósito único.
+ */
+function warehouseNames(
+  tasks: Array<{
+    status: PickTaskStatus;
+    location: { warehouse: { id: string; name: string } };
+  }>,
+  fallback: { name: string } | null,
+): string {
+  const names = new Map<string, string>();
+  for (const t of tasks) {
+    if (t.status === PickTaskStatus.CANCELLED) continue;
+    names.set(t.location.warehouse.id, t.location.warehouse.name);
+  }
+  if (names.size === 0) return fallback?.name ?? 'Sin asignar';
+  return [...names.values()].join(' + ');
+}
 
 function fullName(
   user: { firstName: string; lastName: string } | null | undefined,
@@ -38,7 +67,15 @@ export const PICKING_LIST_SELECT = {
     select: { user: USER_NAME_SELECT },
     orderBy: { assignedAt: 'asc' },
   },
-  pickTasks: { select: { status: true, quantity: true, pickedQty: true } },
+  pickTasks: {
+    select: {
+      status: true,
+      quantity: true,
+      pickedQty: true,
+      location: { select: { warehouse: WAREHOUSE_NAME_SELECT } },
+    },
+    orderBy: { sequence: 'asc' },
+  },
 } satisfies Prisma.OrderSelect;
 
 export type PickingListRow = Prisma.OrderGetPayload<{
@@ -70,7 +107,7 @@ export function toPickingListView(order: PickingListRow): PickingListView {
     orderNumber: order.orderNumber,
     customerName: order.customer.name,
     city: `${order.deliveryAddress.city}, ${order.deliveryAddress.province}`,
-    warehouseName: order.sourceWarehouse.name,
+    warehouseName: warehouseNames(order.pickTasks, order.sourceWarehouse),
     status: order.status,
     totalBultos: order.totalBultos,
     totalWeightKg: Number(order.totalWeightKg),
@@ -108,6 +145,11 @@ export const PICKING_DETAIL_SELECT = {
       status: true,
       pickedAt: true,
       pickedBy: USER_NAME_SELECT,
+      shortReason: true,
+      notes: true,
+      replacesTaskId: true,
+      replacesTask: { select: { location: { select: { code: true } } } },
+      assignedTo: USER_NAME_SELECT,
       product: { select: { sku: true, name: true, barcode: true } },
       location: {
         select: {
@@ -118,6 +160,8 @@ export const PICKING_DETAIL_SELECT = {
           position: true,
           notes: true,
           routeOrder: true,
+          warehouseId: true,
+          warehouse: { select: { id: true, name: true, code: true } },
         },
       },
     },
@@ -152,9 +196,17 @@ export interface PickTaskView {
   status: PickTaskStatus;
   pickedBy: string | null;
   pickedAt: string | null;
+  shortReason: PickShortReason | null;
+  notes: string | null;
+  /** Tarea de reemplazo: ubicación de la toma original con faltante. */
+  replacesTaskId: string | null;
+  replacesLocationCode: string | null;
+  assignedTo: { id: string; name: string } | null;
   location: {
     id: string;
     code: string;
+    warehouseId: string;
+    warehouseName: string;
     zone: string;
     module: number;
     level: string;
@@ -164,6 +216,8 @@ export interface PickTaskView {
 }
 
 export interface PickZoneGroup {
+  warehouseId: string;
+  warehouseName: string;
   zone: string;
   direction: 'ASC' | 'DESC';
   tasks: PickTaskView[];
@@ -173,7 +227,7 @@ export interface PickingDetailView extends PickingListView {
   canStart: boolean;
   pendingTasks: PickTaskView[];
   pickedTasks: PickTaskView[];
-  /** Pendientes agrupados por zona, en el orden del recorrido unidireccional. */
+  /** Pendientes agrupados por depósito y zona, en el orden del recorrido lineal. */
   route: PickZoneGroup[];
   shortages: Array<{
     orderItemId: string;
@@ -190,7 +244,12 @@ export function toPickingDetailView(
 ): PickingDetailView {
   const base = toPickingListView(order);
 
-  const ranks = rankLocationsForRoute(order.pickTasks.map((t) => t.location));
+  const ranks = rankLocationsForRoute(
+    order.pickTasks.map((t) => ({
+      ...t.location,
+      warehouseCode: t.location.warehouse.code,
+    })),
+  );
 
   const tasks: PickTaskView[] = order.pickTasks
     .filter((t) => t.status !== PickTaskStatus.CANCELLED)
@@ -210,9 +269,18 @@ export function toPickingDetailView(
         status: t.status,
         pickedBy: fullName(t.pickedBy),
         pickedAt: t.pickedAt?.toISOString() ?? null,
+        shortReason: t.shortReason,
+        notes: t.notes,
+        replacesTaskId: t.replacesTaskId,
+        replacesLocationCode: t.replacesTask?.location.code ?? null,
+        assignedTo: t.assignedTo
+          ? { id: t.assignedTo.id, name: fullName(t.assignedTo)! }
+          : null,
         location: {
           id: t.location.id,
           code: t.location.code,
+          warehouseId: t.location.warehouseId,
+          warehouseName: t.location.warehouse.name,
           zone: rank.zone,
           module: rank.module,
           level: rank.level,
@@ -226,14 +294,20 @@ export function toPickingDetailView(
   const pendingTasks = tasks.filter((t) => t.status === PickTaskStatus.PENDING);
   const pickedTasks = tasks.filter((t) => t.status !== PickTaskStatus.PENDING);
 
-  // Agrupación por zona respetando la secuencia (bloques contiguos)
+  // Agrupación por depósito + zona respetando la secuencia (bloques contiguos)
   const route: PickZoneGroup[] = [];
   for (const task of pendingTasks) {
     const last = route[route.length - 1];
-    if (last && last.zone === task.location.zone) {
+    if (
+      last &&
+      last.warehouseId === task.location.warehouseId &&
+      last.zone === task.location.zone
+    ) {
       last.tasks.push(task);
     } else {
       route.push({
+        warehouseId: task.location.warehouseId,
+        warehouseName: task.location.warehouseName,
         zone: task.location.zone,
         direction: task.location.direction,
         tasks: [task],
@@ -295,6 +369,13 @@ export const CHECKING_ORDER_SELECT = {
   pickerId: true,
   customer: { select: { name: true, cuit: true } },
   sourceWarehouse: { select: { name: true } },
+  pickTasks: {
+    select: {
+      status: true,
+      location: { select: { warehouse: WAREHOUSE_NAME_SELECT } },
+    },
+    orderBy: { sequence: 'asc' },
+  },
   picker: USER_NAME_SELECT,
   pickerAssignments: { select: { user: USER_NAME_SELECT } },
   items: {
@@ -356,7 +437,7 @@ export function toCheckingOrderView(
     orderNumber: order.orderNumber,
     customerName: order.customer.name,
     customerCuit: order.customer.cuit,
-    warehouseName: order.sourceWarehouse.name,
+    warehouseName: warehouseNames(order.pickTasks, order.sourceWarehouse),
     status: order.status,
     totalWeightKg: Number(order.totalWeightKg),
     totalBultos: order.totalBultos,

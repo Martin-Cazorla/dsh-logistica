@@ -52,7 +52,11 @@ export class ProductsService {
     const ids = products.map((p) => p.id);
     const availability = await fetchAvailableStock(this.prisma, {
       productIds: ids,
-      ...(params.warehouseId ? { warehouseIds: [params.warehouseId] } : {}),
+      // Sin depósito: total consolidado de los depósitos activos (lo que el
+      // alta de pedidos puede reservar).
+      ...(params.warehouseId
+        ? { warehouseIds: [params.warehouseId] }
+        : { activeWarehousesOnly: true }),
     });
 
     const availableMap = new Map<string, number>();

@@ -24,6 +24,7 @@ import {
   ListStockRequestsQueryDto,
   ReviewStockRequestDto,
 } from '../dto/stock-request.dto';
+import { releaseReservation } from '../../orders/services/pick-reservations';
 
 type Tx = Prisma.TransactionClient;
 
@@ -59,6 +60,9 @@ function toView(r: RequestRow) {
     systemQty: r.systemQty,
     countedQty: r.countedQty,
     quantityDelta: r.quantityDelta,
+    /** > 0: faltante de picking en cuarentena (bultos reservados). */
+    heldQty: r.heldQty,
+    pickTaskId: r.pickTaskId,
     reason: r.reason,
     requestedBy: name(r.requestedBy),
     requestedById: r.requestedById,
@@ -208,14 +212,30 @@ export class StockRequestsService {
         : [];
       const inv = invRows[0];
       const currentQty = inv ? Number(inv.quantity) : 0;
+      const held = Number(request.held_qty);
 
-      if (currentQty !== request.system_qty) {
+      if (held > 0) {
+        // Faltante de picking en cuarentena: los bultos ya están apartados
+        // (reservados), así que el control de "stock cambiado" no aplica —
+        // la ubicación pudo seguir despachando otros bultos. Se descuentan
+        // del físico y se libera su reserva.
+        if (!inv || Number(inv.reserved) < held || currentQty < held) {
+          throw new ConflictException(
+            'El stock en cuarentena de esta ubicación no es consistente. Revise la ubicación.',
+          );
+        }
+        await tx.inventory.update({
+          where: { id: inv.id },
+          data: {
+            quantity: { decrement: held },
+            reserved: { decrement: held },
+          },
+        });
+      } else if (currentQty !== request.system_qty) {
         throw new ConflictException(
           `El stock cambió desde el conteo (antes ${request.system_qty}, ahora ${currentQty}). Rechace la solicitud y vuelva a contar.`,
         );
-      }
-
-      if (delta < 0) {
+      } else if (delta < 0) {
         const reserved = inv ? Number(inv.reserved) : 0;
         if (currentQty + delta < reserved) {
           throw new ConflictException(
@@ -311,8 +331,20 @@ export class StockRequestsService {
     dto: ReviewStockRequestDto,
     actor: AuthenticatedUser,
   ) {
+    let warehouseId = '';
     const result = await this.prisma.$transaction(async (tx) => {
       const request = await this.lockPending(tx, id, actor);
+      warehouseId = request.warehouse_id;
+
+      // Faltante de picking rechazado (el bulto estaba bien): se libera la
+      // cuarentena y vuelve a estar disponible.
+      const held = Number(request.held_qty);
+      if (held > 0 && request.inventory_id) {
+        await tx.$queryRaw`
+          SELECT id FROM inventories WHERE id = ${request.inventory_id}::uuid FOR UPDATE
+        `;
+        await releaseReservation(tx, request.inventory_id, held);
+      }
 
       const updated = await tx.stockAdjustmentRequest.update({
         where: { id },
@@ -334,6 +366,7 @@ export class StockRequestsService {
           metadata: {
             requestedById: request.requested_by_id,
             notes: dto.notes ?? null,
+            releasedFromQuarantine: held,
           },
         },
         tx,
@@ -342,6 +375,7 @@ export class StockRequestsService {
       return updated;
     });
 
+    this.gateway.emitOccupancyChanged([warehouseId]);
     return toView(result);
   }
 
@@ -358,12 +392,13 @@ export class StockRequestsService {
         lot_number: string;
         system_qty: number;
         quantity_delta: number;
+        held_qty: number;
         reason: string;
         requested_by_id: string;
       }>
     >`
       SELECT id, status, type, inventory_id, warehouse_id, location_id, product_id,
-             lot_number, system_qty, quantity_delta, reason, requested_by_id
+             lot_number, system_qty, quantity_delta, held_qty, reason, requested_by_id
       FROM stock_adjustment_requests
       WHERE id = ${id}::uuid
       FOR UPDATE

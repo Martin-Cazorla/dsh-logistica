@@ -16,6 +16,9 @@ export interface StockRequest {
   systemQty: number;
   countedQty: number;
   quantityDelta: number;
+  /** > 0: faltante de picking en cuarentena (bultos reservados hasta revisar). */
+  heldQty: number;
+  pickTaskId: string | null;
   reason: string;
   requestedBy: string | null;
   requestedById: string;

@@ -16,9 +16,15 @@ import {
   IsDateString,
   IsNumber,
   MaxLength,
+  ValidateIf,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { Currency, OrderStatus, PaymentTerm } from '@prisma/client';
+import {
+  Currency,
+  OrderStatus,
+  PaymentTerm,
+  ShippingType,
+} from '@prisma/client';
 
 export class CreateOrderItemDto {
   @IsUUID()
@@ -45,12 +51,14 @@ export class CreateOrderItemDto {
 }
 
 export class CreateOrderDto {
-  /** Si se omite, el sistema genera uno (PED-AAAAMMDD-XXXXXX). */
-  @IsOptional()
+  /**
+   * N° de presupuesto del sistema externo. Es el número de pedido visible
+   * (único).
+   */
   @IsString()
-  @IsNotEmpty()
+  @IsNotEmpty({ message: 'Indique el número de presupuesto.' })
   @MaxLength(50)
-  orderNumber?: string;
+  orderNumber: string;
 
   @IsUUID()
   customerId: string;
@@ -58,21 +66,27 @@ export class CreateOrderDto {
   @IsUUID()
   addressId: string; // Dirección de entrega registrada del cliente
 
-  @IsUUID()
-  sourceWarehouseId: string; // Depósito de origen
-
   /**
-   * Vendedor del pedido. Obligatorio para Administrador y Gestor (rol
-   * Vendedor). Si carga un Vendedor se ignora y se usa el usuario logueado;
-   * enviar otro vendedor responde 403. Validado en OrdersService.
+   * Vendedor del pedido (opcional). Si carga un Vendedor se ignora y se usa
+   * el usuario logueado; enviar otro vendedor responde 403. Validado en
+   * OrdersService.
    */
   @IsUUID()
   @IsOptional()
   sellerId?: string;
 
-  @IsUUID()
+  /** Transporte DSH (propio) o Expreso. */
+  @IsEnum(ShippingType, { message: 'Seleccione el tipo de envío.' })
+  shippingType: ShippingType;
+
+  /** Expreso que realiza el envío: obligatorio si shippingType = EXPRESO. */
+  @ValidateIf((o: CreateOrderDto) => o.shippingType === ShippingType.EXPRESO)
+  @IsUUID('all', { message: 'Seleccione el expreso.' })
+  transportId?: string;
+
+  @IsDateString()
   @IsOptional()
-  transportId?: string; // Envío por transporte externo
+  estimatedDeliveryDate?: string;
 
   @IsEnum(Currency)
   @IsOptional()

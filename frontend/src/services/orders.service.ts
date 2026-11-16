@@ -5,8 +5,10 @@ import {
   CatalogProduct,
   CreateOrderPayload,
   OrderListItem,
+  OrderPrintSheet,
   OrdersConfig,
   OrdersPage,
+  TransportOption,
 } from '@/types/orders.types';
 import { OrderStatus } from '@/types/picking.types';
 
@@ -40,6 +42,17 @@ export const ordersService = {
 
   async create(payload: CreateOrderPayload): Promise<OrderListItem> {
     const response = await api.post<OrderListItem>('/orders', payload);
+    return response.data;
+  },
+
+  async getPrintSheet(id: string): Promise<OrderPrintSheet> {
+    const response = await api.get<OrderPrintSheet>(`/orders/${id}/print`);
+    return response.data;
+  },
+
+  /** Expresos disponibles para el envío. */
+  async listTransports(): Promise<TransportOption[]> {
+    const response = await api.get<TransportOption[]>('/orders/transports');
     return response.data;
   },
 

@@ -44,6 +44,39 @@ export interface PickingOrderSummary {
   progress: { totalTasks: number; doneTasks: number; pickedBultos: number };
 }
 
+export type PickShortReason = 'DAMAGED' | 'NOT_FOUND' | 'OTHER';
+
+export const SHORT_REASON_LABELS: Record<PickShortReason, string> = {
+  DAMAGED: 'Roto / en mal estado',
+  NOT_FOUND: 'No estaba en la ubicación',
+  OTHER: 'Otro (detallar)',
+};
+
+/** Resultado de confirmar una toma con faltante. */
+export interface ShortageOutcome {
+  taskId: string;
+  missing: number;
+  shortReason: PickShortReason;
+  /** Bultos en cuarentena (solicitud de ajuste pendiente). */
+  quarantined: number;
+  stockRequestId: string | null;
+  /** Bultos sin stock alternativo: faltante justificado. */
+  uncovered: number;
+  replacements: Array<{
+    taskId: string;
+    quantity: number;
+    locationCode: string;
+    warehouseName: string;
+    assignedToMe: boolean;
+  }>;
+}
+
+export interface ConfirmPickTaskPayload {
+  quantity: number;
+  shortReason?: PickShortReason;
+  notes?: string;
+}
+
 export interface PickTask {
   id: string;
   sequence: number;
@@ -58,9 +91,17 @@ export interface PickTask {
   status: PickTaskStatus;
   pickedBy: string | null;
   pickedAt: string | null;
+  shortReason: PickShortReason | null;
+  notes: string | null;
+  /** Tarea de reemplazo generada ante un faltante. */
+  replacesTaskId: string | null;
+  replacesLocationCode: string | null;
+  assignedTo: { id: string; name: string } | null;
   location: {
     id: string;
     code: string;
+    warehouseId: string;
+    warehouseName: string;
     zone: string;
     module: number;
     level: string;
@@ -70,6 +111,8 @@ export interface PickTask {
 }
 
 export interface PickZoneGroup {
+  warehouseId: string;
+  warehouseName: string;
   zone: string;
   direction: 'ASC' | 'DESC';
   tasks: PickTask[];

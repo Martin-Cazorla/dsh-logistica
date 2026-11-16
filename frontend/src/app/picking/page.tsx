@@ -6,6 +6,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import AppShell from '@/components/layout/AppShell';
 import { useAuth } from '@/context/AuthContext';
 import { pickingService } from '@/services/picking.service';
+import { isAxiosError } from 'axios';
 import { getApiErrorMessage } from '@/lib/axios';
 import { can } from '@/lib/permissions';
 import { formatNumber } from '@/lib/format';
@@ -13,7 +14,10 @@ import {
   ORDER_STATUS_LABELS,
   PickingOrderDetail,
   PickingOrderSummary,
+  PickShortReason,
   PickTask,
+  SHORT_REASON_LABELS,
+  ShortageOutcome,
 } from '@/types/picking.types';
 import {
   Alert,
@@ -47,6 +51,10 @@ function PickingScreen() {
   const [tab, setTab] = useState<TabKey>('PENDING');
   const [confirmTask, setConfirmTask] = useState<PickTask | null>(null);
   const [confirmQty, setConfirmQty] = useState(0);
+  const [shortReason, setShortReason] = useState<PickShortReason | ''>('');
+  const [shortNotes, setShortNotes] = useState('');
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<ShortageOutcome | null>(null);
 
   const isSupervisor = can(user?.role, 'PICKING_ASSIGN');
 
@@ -104,26 +112,61 @@ function PickingScreen() {
   const askConfirm = (task: PickTask) => {
     setConfirmTask(task);
     setConfirmQty(task.quantity);
+    setShortReason('');
+    setShortNotes('');
+    setConfirmError(null);
   };
 
+  const isShort = !!confirmTask && confirmQty < confirmTask.quantity;
+
   const submitConfirm = async () => {
-    if (!detail || !confirmTask) return;
+    if (!detail || !confirmTask || busy) return;
+    if (isShort && !shortReason) {
+      setConfirmError('Seleccione el motivo del faltante.');
+      return;
+    }
+    if (isShort && shortReason === 'OTHER' && !shortNotes.trim()) {
+      setConfirmError('Con motivo "Otro" detalle la observación.');
+      return;
+    }
     setBusy(true);
     setError(null);
+    setConfirmError(null);
     try {
-      const updated = await pickingService.confirmTask(detail.id, confirmTask.id, confirmQty);
+      const { shortageOutcome, ...updated } = await pickingService.confirmTask(
+        detail.id,
+        confirmTask.id,
+        {
+          quantity: confirmQty,
+          ...(isShort ? { shortReason: shortReason as PickShortReason } : {}),
+          ...(shortNotes.trim() ? { notes: shortNotes.trim() } : {}),
+        },
+      );
       setDetail(updated);
       setConfirmTask(null);
+      setNotice(shortageOutcome);
+      setTab('PENDING');
       if (updated.status === 'PICKED') {
         setSuccess(`Pedido #${updated.orderNumber} completo: pasó a ARMADO.`);
       }
     } catch (err) {
-      setError(getApiErrorMessage(err, 'No se pudo confirmar la línea.'));
+      // 409: la línea ya estaba confirmada (doble toque u otro operario).
+      const status = isAxiosError(err) ? err.response?.status : undefined;
+      if (status === 409) {
+        setSuccess('La línea ya estaba confirmada. Se actualizó el recorrido.');
+      } else {
+        setError(getApiErrorMessage(err, 'No se pudo confirmar la línea.'));
+      }
       await refreshDetail();
       setConfirmTask(null);
     } finally {
       setBusy(false);
     }
+  };
+
+  const goToTask = (taskId: string) => {
+    const task = detail?.pendingTasks.find((t) => t.id === taskId);
+    if (task) askConfirm(task);
   };
 
   // ---------------------------------------------------------------------------
@@ -255,6 +298,10 @@ function PickingScreen() {
         </Alert>
       )}
 
+      {notice && (
+        <ShortageNotice notice={notice} onGo={goToTask} onClose={() => setNotice(null)} />
+      )}
+
       {nextTask && tab === 'PENDING' && (
         <div className="mb-4 rounded-2xl border-2 border-amber-500 bg-amber-500/10 p-4">
           <p className="text-xs font-bold uppercase tracking-widest text-amber-300">
@@ -297,13 +344,16 @@ function PickingScreen() {
         ) : (
           <ol className="space-y-4">
             {detail.route.map((group, gi) => (
-              <li key={`${group.zone}-${gi}`}>
+              <li key={`${group.warehouseId}-${group.zone}-${gi}`}>
+                {(gi === 0 || detail.route[gi - 1].warehouseId !== group.warehouseId) && (
+                  <p className="mb-2 rounded-lg bg-amber-500/10 px-3 py-1.5 text-sm font-black uppercase tracking-wide text-amber-300">
+                    Depósito {group.warehouseName}
+                  </p>
+                )}
                 <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-slate-400">
                   <span className="rounded bg-slate-700 px-2 py-0.5 text-slate-100">Zona {gi + 1}</span>
                   {group.zone}
-                  <span className="text-amber-400">
-                    {group.direction === 'ASC' ? '→ módulos ascendentes' : '← módulos descendentes'}
-                  </span>
+                  <span className="text-amber-400">→ módulos ascendentes</span>
                 </div>
                 <ul className="space-y-2">
                   {group.tasks.map((task) => (
@@ -329,6 +379,15 @@ function PickingScreen() {
               <p className="text-sm text-slate-300">
                 {task.pickedQty}/{task.quantity} × {task.productSku} {task.productName}
               </p>
+              {task.shortReason && (
+                <p className="text-xs text-red-300">
+                  {SHORT_REASON_LABELS[task.shortReason]}
+                  {task.notes ? ` · ${task.notes}` : ''}
+                </p>
+              )}
+              {task.replacesLocationCode && (
+                <p className="text-xs text-sky-300">↻ Reemplazo de {task.replacesLocationCode}</p>
+              )}
               <p className="text-[11px] text-slate-500">
                 {task.pickedBy} · {task.pickedAt ? new Date(task.pickedAt).toLocaleTimeString('es-AR') : ''}
               </p>
@@ -347,11 +406,12 @@ function PickingScreen() {
               Cancelar
             </Button>
             <Button
-              variant={confirmTask && confirmQty < confirmTask.quantity ? 'danger' : 'success'}
+              variant={isShort ? 'danger' : 'success'}
               onClick={submitConfirm}
               loading={busy}
+              disabled={busy}
             >
-              {confirmTask && confirmQty < confirmTask.quantity ? 'Confirmar con faltante' : 'Confirmar'}
+              {isShort ? 'Confirmar con faltante' : 'Confirmar'}
             </Button>
           </>
         }
@@ -380,6 +440,53 @@ function PickingScreen() {
               </button>
             </div>
             <p className="mt-2 text-xs text-slate-500">Planificado: {confirmTask.quantity} bultos</p>
+
+            {isShort && (
+              <div className="mt-4 space-y-3 rounded-xl border border-red-500/40 bg-red-500/10 p-3 text-left">
+                <p className="text-sm font-bold text-red-200">
+                  {confirmTask.quantity - confirmQty === 1
+                    ? 'Falta 1 bulto'
+                    : `Faltan ${confirmTask.quantity - confirmQty} bultos`}
+                  . ¿Por qué?
+                </p>
+                <div className="grid gap-2">
+                  {(Object.keys(SHORT_REASON_LABELS) as PickShortReason[]).map((r) => (
+                    <label
+                      key={r}
+                      className={`flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 text-sm ${
+                        shortReason === r ? 'border-amber-400 bg-amber-500/10 text-white' : 'border-slate-700 text-slate-300'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="shortReason"
+                        className="h-4 w-4 accent-amber-500"
+                        checked={shortReason === r}
+                        onChange={() => setShortReason(r)}
+                      />
+                      {SHORT_REASON_LABELS[r]}
+                    </label>
+                  ))}
+                </div>
+                <textarea
+                  rows={2}
+                  maxLength={255}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
+                  placeholder={
+                    shortReason === 'OTHER' ? 'Observación (obligatoria)' : 'Observación (opcional), ej.: caja aplastada'
+                  }
+                  value={shortNotes}
+                  onChange={(e) => setShortNotes(e.target.value)}
+                />
+                <p className="text-[11px] text-slate-400">
+                  Se buscará el faltante en otras ubicaciones.
+                  {shortReason === 'DAMAGED' || shortReason === 'NOT_FOUND'
+                    ? ' Los bultos quedan en cuarentena hasta que un Gestor revise el ajuste.'
+                    : ''}
+                </p>
+              </div>
+            )}
+            {confirmError && <p className="mt-3 text-sm font-bold text-red-300">{confirmError}</p>}
           </div>
         )}
       </Modal>
@@ -406,6 +513,12 @@ function TaskRow({
         <p className="truncate text-sm text-slate-300">
           <strong>{task.quantity}</strong> × {task.productSku} {task.productName}
         </p>
+        {task.replacesLocationCode && (
+          <p className="text-[11px] font-bold text-sky-300">
+            ↻ Reemplazo de {task.replacesLocationCode}
+            {task.assignedTo ? ` · asignada a ${task.assignedTo.name}` : ' · sin asignar'}
+          </p>
+        )}
         <p className="text-[11px] text-slate-500">
           Mód. {task.location.module} · Nivel {task.location.level}
           {task.location.comments ? ` · ${task.location.comments}` : ''}
@@ -415,5 +528,57 @@ function TaskRow({
         ✓
       </Button>
     </li>
+  );
+}
+
+/** Aviso tras confirmar con faltante: reemplazos generados o faltante justificado. */
+function ShortageNotice({
+  notice,
+  onGo,
+  onClose,
+}: {
+  notice: ShortageOutcome;
+  onGo: (taskId: string) => void;
+  onClose: () => void;
+}) {
+  const mine = notice.replacements.filter((r) => r.assignedToMe);
+  const others = notice.replacements.filter((r) => !r.assignedToMe);
+  return (
+    <div className="mb-4 rounded-2xl border-2 border-sky-500 bg-sky-500/10 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-xs font-bold uppercase tracking-widest text-sky-300">Faltante registrado</p>
+        <button className="text-slate-400 hover:text-white" onClick={onClose} aria-label="Cerrar aviso">
+          ✕
+        </button>
+      </div>
+      {mine.map((r) => (
+        <div key={r.taskId} className="mt-2 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-lg font-bold text-white">
+            Tomá {r.quantity} {r.quantity === 1 ? 'bulto' : 'bultos'} de{' '}
+            <span className="font-mono text-amber-300">{r.locationCode}</span>
+          </p>
+          <Button size="sm" onClick={() => onGo(r.taskId)}>
+            Ir a la tarea
+          </Button>
+        </div>
+      ))}
+      {others.map((r) => (
+        <p key={r.taskId} className="mt-2 text-sm text-slate-200">
+          Se generó una toma de {r.quantity} en <strong>{r.warehouseName}</strong> ({r.locationCode}), pendiente de
+          asignación.
+        </p>
+      ))}
+      {notice.uncovered > 0 && (
+        <p className="mt-2 text-sm text-amber-200">
+          Sin stock alternativo para {notice.uncovered} {notice.uncovered === 1 ? 'bulto' : 'bultos'}: queda como
+          faltante justificado.
+        </p>
+      )}
+      {notice.quarantined > 0 && (
+        <p className="mt-1 text-xs text-slate-400">
+          {notice.quarantined} en cuarentena: se generó una solicitud de ajuste para el Gestor.
+        </p>
+      )}
+    </div>
   );
 }

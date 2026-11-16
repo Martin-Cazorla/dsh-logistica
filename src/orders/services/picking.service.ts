@@ -7,7 +7,14 @@ import {
   ConflictException,
   ForbiddenException,
 } from '@nestjs/common';
-import { OrderStatus, PickTaskStatus, Prisma, UserRole } from '@prisma/client';
+import {
+  OrderStatus,
+  PickShortReason,
+  PickTaskStatus,
+  Prisma,
+  StockRequestType,
+  UserRole,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../../audit/audit.service';
 import { AuditAction, AuditEntity } from '../../audit/audit.actions';
@@ -24,20 +31,43 @@ import {
   toPickingListView,
 } from '../mappers/order-view.mapper';
 import {
-  PickDemand,
-  StockCandidate,
-  planPicks,
-  rankLocationsForRoute,
-  RoutableLocation,
-} from '../picking/pick-route';
-import {
   consumeReservedStock,
   purgeEmptyInventory,
   releasePendingReservations,
-  reserveStock,
 } from './pick-reservations';
+import { planAndReserve, reserveReplacement } from './pick-planner';
 
 type Tx = Prisma.TransactionClient;
+
+/** Motivos cuyo faltante queda en cuarentena + solicitud de ajuste. */
+const QUARANTINE_REASONS = new Set<PickShortReason>([
+  PickShortReason.DAMAGED,
+  PickShortReason.NOT_FOUND,
+]);
+
+export const SHORT_REASON_LABELS: Record<PickShortReason, string> = {
+  DAMAGED: 'roto / en mal estado',
+  NOT_FOUND: 'no estaba en la ubicación',
+  OTHER: 'otro motivo',
+};
+
+/** Resultado de confirmar con faltante, para el aviso al picker. */
+export interface ShortageOutcome {
+  taskId: string;
+  missing: number;
+  shortReason: PickShortReason;
+  quarantined: number;
+  stockRequestId: string | null;
+  /** Bultos que no se pudieron cubrir: faltante justificado. */
+  uncovered: number;
+  replacements: Array<{
+    taskId: string;
+    quantity: number;
+    locationCode: string;
+    warehouseName: string;
+    assignedToMe: boolean;
+  }>;
+}
 
 const PICKABLE_ROLES: UserRole[] = [
   UserRole.PICKER,
@@ -49,23 +79,9 @@ interface LockedOrderRow {
   id: string;
   status: OrderStatus;
   picker_id: string | null;
-  source_warehouse_id: string;
+  /** Sólo pedidos anteriores al multi-depósito; los nuevos lo tienen en NULL. */
+  source_warehouse_id: string | null;
   order_number: string;
-}
-
-interface CandidateRow {
-  inventory_id: string;
-  product_id: string;
-  location_id: string;
-  lot_number: string;
-  quantity: number;
-  reserved: number;
-  expires_at: Date | null;
-  code: string;
-  aisle: string;
-  rack: string;
-  position: string;
-  route_order: number | null;
 }
 
 interface LockedTaskRow {
@@ -74,6 +90,7 @@ interface LockedTaskRow {
   order_item_id: string;
   product_id: string;
   location_id: string;
+  warehouse_id: string;
   inventory_id: string | null;
   lot_number: string;
   quantity: number;
@@ -245,94 +262,40 @@ export class PickingService {
           );
         }
 
-        const items = await tx.orderItem.findMany({
-          where: { orderId },
-          select: { id: true, productId: true, bultos: true },
+        // Los pedidos nuevos ya tienen el recorrido planificado y el stock
+        // reservado desde el alta. Sólo se planifica acá si el pedido no
+        // tiene tareas (pedidos anteriores al multi-depósito, o tras una
+        // replanificación sin stock).
+        const existing = await tx.pickTask.findMany({
+          where: { orderId, status: PickTaskStatus.PENDING },
+          select: { locationId: true, quantity: true },
         });
 
-        const candidates = await tx.$queryRaw<CandidateRow[]>`
-          SELECT i.id AS inventory_id, i.product_id, i.location_id, i.lot_number,
-                 i.quantity, i.reserved, i.expires_at,
-                 l.code, l.aisle, l.rack, l.position, l.route_order
-          FROM inventories i
-          JOIN locations l ON l.id = i.location_id
-          WHERE i.warehouse_id = ${order.source_warehouse_id}::uuid
-            AND i.product_id = ANY(${items.map((i) => i.productId)}::uuid[])
-            AND l.is_blocked = false
-            AND i.quantity - i.reserved > 0
-          ORDER BY i.id
-          FOR UPDATE OF i
-        `;
+        let plannedTasks = existing.length;
+        let shortages: Array<{
+          orderItemId: string;
+          productId: string;
+          missing: number;
+        }> = [];
+        let warehouseOrder: string[] = [];
 
-        const locationsById = new Map<string, RoutableLocation>();
-        for (const c of candidates) {
-          locationsById.set(c.location_id, {
-            id: c.location_id,
-            code: c.code,
-            aisle: c.aisle,
-            rack: c.rack,
-            position: c.position,
-            routeOrder: c.route_order,
+        if (existing.length === 0) {
+          const items = await tx.orderItem.findMany({
+            where: { orderId },
+            select: { id: true, productId: true, bultos: true },
           });
-        }
-
-        const demands: PickDemand[] = items.map((i) => ({
-          orderItemId: i.id,
-          productId: i.productId,
-          quantity: i.bultos,
-        }));
-        const stock: StockCandidate[] = candidates.map((c) => ({
-          inventoryId: c.inventory_id,
-          productId: c.product_id,
-          locationId: c.location_id,
-          lotNumber: c.lot_number,
-          available: Number(c.quantity) - Number(c.reserved),
-          expiresAt: c.expires_at,
-        }));
-
-        // 1ª pasada: elección de stock (FEFO / menos paradas / recorrido)
-        const preliminary = planPicks(
-          demands,
-          stock,
-          rankLocationsForRoute([...locationsById.values()]),
-        );
-
-        // 2ª pasada: el sentido serpentina se recalcula sólo sobre las zonas
-        // que realmente se visitan, y se renumera la secuencia.
-        const visited = [
-          ...new Set(preliminary.picks.map((p) => p.locationId)),
-        ].map((id) => locationsById.get(id)!);
-        const finalRanks = rankLocationsForRoute(visited);
-        const picks = [...preliminary.picks]
-          .sort(
-            (a, b) =>
-              finalRanks.get(a.locationId)!.rank -
-              finalRanks.get(b.locationId)!.rank,
-          )
-          .map((p, i) => ({ ...p, sequence: i + 1 }));
-
-        for (const pick of picks) {
-          const ok = await reserveStock(tx, pick.inventoryId, pick.quantity);
-          if (!ok) {
-            throw new ConflictException(
-              'El stock cambió mientras se planificaba el recorrido. Reintente.',
-            );
-          }
-        }
-
-        if (picks.length > 0) {
-          await tx.pickTask.createMany({
-            data: picks.map((p) => ({
-              orderId,
-              orderItemId: p.orderItemId,
-              productId: p.productId,
-              locationId: p.locationId,
-              inventoryId: p.inventoryId,
-              lotNumber: p.lotNumber,
-              sequence: p.sequence,
-              quantity: p.quantity,
-            })),
+          const { plan } = await planAndReserve(tx, {
+            orderId,
+            items,
+            // Pedido histórico de un solo depósito: se respeta su depósito.
+            warehouseIds: order.source_warehouse_id
+              ? [order.source_warehouse_id]
+              : undefined,
+            allowShortages: true,
           });
+          plannedTasks = plan.picks.length;
+          shortages = plan.shortages;
+          warehouseOrder = plan.warehouseOrder;
         }
 
         await tx.order.update({
@@ -352,7 +315,7 @@ export class PickingService {
           });
         }
 
-        shortageCount = preliminary.shortages.length;
+        shortageCount = shortages.length;
 
         await this.audit.log(
           {
@@ -362,13 +325,10 @@ export class PickingService {
             entityId: orderId,
             metadata: {
               orderNumber: order.order_number,
-              tasks: picks.length,
-              zones: [
-                ...new Set(
-                  picks.map((p) => finalRanks.get(p.locationId)!.zone),
-                ),
-              ],
-              shortages: preliminary.shortages,
+              tasks: plannedTasks,
+              plannedAtCreation: existing.length > 0,
+              warehouses: warehouseOrder,
+              shortages,
             },
           },
           tx,
@@ -390,15 +350,15 @@ export class PickingService {
     taskId: string,
     dto: ConfirmPickTaskDto,
     user: AuthenticatedUser,
-  ): Promise<PickingDetailView> {
+  ): Promise<PickingDetailView & { shortageOutcome: ShortageOutcome | null }> {
     let warehouseId = '';
+    let outcome: ShortageOutcome | null = null;
 
     await this.prisma.$transaction(
       async (tx) => {
         // Orden de bloqueo fijo (pedido -> tarea) para evitar deadlocks
         const order = await this.lockOrder(tx, orderId);
         await this.assertCanAccess(tx, orderId, user);
-        warehouseId = order.source_warehouse_id;
 
         if (order.status !== OrderStatus.IN_PICKING) {
           throw new ConflictException(
@@ -407,15 +367,18 @@ export class PickingService {
         }
 
         const taskRows = await tx.$queryRaw<LockedTaskRow[]>`
-          SELECT id, order_id, order_item_id, product_id, location_id,
-                 inventory_id, lot_number, quantity, status
-          FROM pick_tasks
-          WHERE id = ${taskId}::uuid AND order_id = ${orderId}::uuid
-          FOR UPDATE
+          SELECT t.id, t.order_id, t.order_item_id, t.product_id, t.location_id,
+                 l.warehouse_id, t.inventory_id, t.lot_number, t.quantity, t.status
+          FROM pick_tasks t
+          JOIN locations l ON l.id = t.location_id
+          WHERE t.id = ${taskId}::uuid AND t.order_id = ${orderId}::uuid
+          FOR UPDATE OF t
         `;
         const task = taskRows[0];
         if (!task)
           throw new NotFoundException('Tarea de picking no encontrada.');
+        // El depósito de la toma es el de su ubicación (pedido multi-depósito)
+        warehouseId = task.warehouse_id;
 
         if (task.status !== PickTaskStatus.PENDING) {
           throw new ConflictException(
@@ -433,11 +396,32 @@ export class PickingService {
           );
         }
 
+        const missing = task.quantity - dto.quantity;
+        const notes = dto.notes?.trim() || null;
+        if (missing > 0 && !dto.shortReason) {
+          throw new BadRequestException(
+            'Indique el motivo del faltante (roto / no estaba / otro).',
+          );
+        }
+        if (missing > 0 && dto.shortReason === PickShortReason.OTHER && !notes) {
+          throw new BadRequestException(
+            'Con motivo "Otro" la observación es obligatoria.',
+          );
+        }
+        const shortReason = missing > 0 ? dto.shortReason! : null;
+
+        // Roto / no estaba: los bultos faltantes quedan en CUARENTENA (siguen
+        // reservados, nadie más los puede tomar) hasta que un Gestor apruebe
+        // o rechace la solicitud de ajuste. "Otro": se liberan como siempre.
+        const heldQty = shortReason && QUARANTINE_REASONS.has(shortReason)
+          ? missing
+          : 0;
+
         const consumed = await consumeReservedStock(
           tx,
           task.inventory_id,
           dto.quantity,
-          task.quantity,
+          task.quantity - heldQty,
         );
         if (!consumed) {
           throw new ConflictException(
@@ -448,7 +432,7 @@ export class PickingService {
         if (dto.quantity > 0) {
           await tx.stockMovement.create({
             data: {
-              warehouseId: order.source_warehouse_id,
+              warehouseId: task.warehouse_id,
               productId: task.product_id,
               sourceLocationId: task.location_id,
               userId: user.id,
@@ -482,10 +466,78 @@ export class PickingService {
             status,
             pickedById: user.id,
             pickedAt: now,
+            shortReason,
+            notes,
           },
         });
 
-        await purgeEmptyInventory(tx, task.inventory_id);
+        let stockRequestId: string | null = null;
+        if (heldQty > 0) {
+          const inv = await tx.inventory.findUnique({
+            where: { id: task.inventory_id },
+            select: { quantity: true },
+          });
+          const systemQty = inv?.quantity ?? 0;
+          // pickTaskId es único: una tarea genera a lo sumo una solicitud
+          const request = await tx.stockAdjustmentRequest.create({
+            data: {
+              inventoryId: task.inventory_id,
+              warehouseId: task.warehouse_id,
+              locationId: task.location_id,
+              productId: task.product_id,
+              lotNumber: task.lot_number,
+              type: StockRequestType.ADJUSTMENT,
+              systemQty,
+              countedQty: systemQty - heldQty,
+              quantityDelta: -heldQty,
+              heldQty,
+              pickTaskId: taskId,
+              reason:
+                `Faltante en picking ${order.order_number}: ${SHORT_REASON_LABELS[shortReason!]}${notes ? ` — ${notes}` : ''}`.slice(
+                  0,
+                  255,
+                ),
+              requestedById: user.id,
+            },
+            select: { id: true },
+          });
+          stockRequestId = request.id;
+        } else {
+          await purgeEmptyInventory(tx, task.inventory_id);
+        }
+
+        // Reemplazo automático: buscar los bultos faltantes en otras
+        // ubicaciones (mismo depósito primero, después otros depósitos).
+        if (missing > 0) {
+          const replacement = await reserveReplacement(tx, {
+            orderId,
+            original: {
+              id: task.id,
+              orderItemId: task.order_item_id,
+              productId: task.product_id,
+              locationId: task.location_id,
+              warehouseId: task.warehouse_id,
+            },
+            missing,
+            pickerId: user.id,
+            restrictToWarehouseId: order.source_warehouse_id,
+          });
+          outcome = {
+            taskId,
+            missing,
+            shortReason: shortReason!,
+            quarantined: heldQty,
+            stockRequestId,
+            uncovered: replacement.uncovered,
+            replacements: replacement.created.map((r) => ({
+              taskId: r.taskId,
+              quantity: r.quantity,
+              locationCode: r.locationCode,
+              warehouseName: r.warehouseName,
+              assignedToMe: r.assignedToId === user.id,
+            })),
+          };
+        }
 
         await this.audit.log(
           {
@@ -502,6 +554,17 @@ export class PickingService {
               planned: task.quantity,
               picked: dto.quantity,
               status,
+              shortReason,
+              notes,
+              quarantined: heldQty,
+              stockRequestId,
+              replacements: outcome?.replacements.map((r) => ({
+                taskId: r.taskId,
+                quantity: r.quantity,
+                location: r.locationCode,
+                warehouse: r.warehouseName,
+              })),
+              uncovered: outcome?.uncovered ?? 0,
             },
           },
           tx,
@@ -542,12 +605,14 @@ export class PickingService {
     );
 
     this.inventoryGateway.emitOccupancyChanged([warehouseId]);
-    return this.getDetail(orderId, user);
+    const detail = await this.getDetail(orderId, user);
+    return { ...detail, shortageOutcome: outcome };
   }
 
   /**
    * Libera reservas pendientes (p. ej. al reasignar o replanificar). Sólo
-   * supervisores. El pedido vuelve a PENDING si no se pickeó nada.
+   * supervisores. Si no se pickeó nada, el pedido vuelve a PENDING con un
+   * recorrido nuevo (y su stock nuevamente reservado).
    */
   async resetPlan(orderId: string, user: AuthenticatedUser) {
     if (!isSupervisor(user.role)) {
@@ -566,12 +631,33 @@ export class PickingService {
         _sum: { pickedQty: true },
       });
 
+      let replanned: { tasks: number; shortages: number } | null = null;
+
       if ((picked._sum.pickedQty ?? 0) === 0) {
         await tx.pickTask.deleteMany({ where: { orderId } });
         await tx.order.update({
           where: { id: orderId },
           data: { status: OrderStatus.PENDING, pickingStartedAt: null },
         });
+
+        // Los pedidos pendientes mantienen su stock reservado: se vuelve a
+        // planificar con el stock actual de todos los depósitos.
+        const items = await tx.orderItem.findMany({
+          where: { orderId },
+          select: { id: true, productId: true, bultos: true },
+        });
+        const { plan } = await planAndReserve(tx, {
+          orderId,
+          items,
+          warehouseIds: order.source_warehouse_id
+            ? [order.source_warehouse_id]
+            : undefined,
+          allowShortages: true,
+        });
+        replanned = {
+          tasks: plan.picks.length,
+          shortages: plan.shortages.length,
+        };
       } else {
         await tx.order.update({
           where: { id: orderId },
@@ -585,7 +671,11 @@ export class PickingService {
           action: AuditAction.PICKING_PLAN_RESET,
           entityType: AuditEntity.ORDER,
           entityId: orderId,
-          metadata: { orderNumber: order.order_number, released: true },
+          metadata: {
+            orderNumber: order.order_number,
+            released: true,
+            replanned,
+          },
         },
         tx,
       );

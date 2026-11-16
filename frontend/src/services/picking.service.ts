@@ -2,8 +2,10 @@
 
 import api from '@/lib/axios';
 import {
+  ConfirmPickTaskPayload,
   PickingOrderDetail,
   PickingOrderSummary,
+  ShortageOutcome,
 } from '@/types/picking.types';
 
 /** Alineado con src/orders/controllers/picking.controller.ts */
@@ -31,16 +33,19 @@ export const pickingService = {
     return response.data;
   },
 
-  /** Confirma una línea: pasa a "Pickeados". quantity < planificado = faltante. */
+  /**
+   * Confirma una línea: pasa a "Pickeados". quantity < planificado = faltante
+   * (motivo obligatorio; con OTHER también la observación). La respuesta trae
+   * las tareas de reemplazo generadas.
+   */
   async confirmTask(
     orderId: string,
     taskId: string,
-    quantity: number,
-  ): Promise<PickingOrderDetail> {
-    const response = await api.post<PickingOrderDetail>(
-      `/orders/picking/${orderId}/tasks/${taskId}/confirm`,
-      { quantity },
-    );
+    payload: ConfirmPickTaskPayload,
+  ): Promise<PickingOrderDetail & { shortageOutcome: ShortageOutcome | null }> {
+    const response = await api.post<
+      PickingOrderDetail & { shortageOutcome: ShortageOutcome | null }
+    >(`/orders/picking/${orderId}/tasks/${taskId}/confirm`, payload);
     return response.data;
   },
 

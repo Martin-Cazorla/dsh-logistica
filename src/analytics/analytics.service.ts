@@ -149,7 +149,18 @@ export class AnalyticsService {
       Prisma.sql`o.status::text = ANY(${statuses}::text[])`,
     ];
     if (f.warehouseId) {
-      conds.push(Prisma.sql`o.source_warehouse_id = ${f.warehouseId}::uuid`);
+      // Pedido multi-depósito: alguna toma de ese depósito. Los pedidos
+      // históricos conservan su depósito único.
+      conds.push(Prisma.sql`(
+        o.source_warehouse_id = ${f.warehouseId}::uuid
+        OR EXISTS (
+          SELECT 1 FROM pick_tasks pt
+          JOIN locations pl ON pl.id = pt.location_id
+          WHERE pt.order_id = o.id
+            AND pt.status <> 'CANCELLED'
+            AND pl.warehouse_id = ${f.warehouseId}::uuid
+        )
+      )`);
     }
     if (f.sellerId === 'none') conds.push(Prisma.sql`o.seller_id IS NULL`);
     else if (f.sellerId)

@@ -7,15 +7,24 @@ import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/context/AuthContext';
 import { ordersService } from '@/services/orders.service';
 import { customersService } from '@/services/customers.service';
-import { inventoryService } from '@/services/inventory.service';
 import { usersService } from '@/services/users.service';
 import { pickingService } from '@/services/picking.service';
 import { getApiErrorMessage } from '@/lib/axios';
 import { can } from '@/lib/permissions';
 import { formatDate, formatDateTime, formatNumber } from '@/lib/format';
 import { Customer } from '@/types/customers.types';
-import { CatalogProduct, OrderListItem, OrdersPage as OrdersPageData } from '@/types/orders.types';
-import { ORDER_STATUS_LABELS, OrderStatus } from '@/types/picking.types';
+import {
+  CatalogProduct,
+  OrderListItem,
+  OrdersPage as OrdersPageData,
+  PickingHistory,
+  PickingHistoryTask,
+  SHIPPING_TYPE_LABELS,
+  ShippingType,
+  TransportOption,
+  shippingLabel,
+} from '@/types/orders.types';
+import { ORDER_STATUS_LABELS, OrderStatus, SHORT_REASON_LABELS } from '@/types/picking.types';
 import { ManagedUser } from '@/types/users.types';
 import {
   Alert,
@@ -107,6 +116,22 @@ function OrdersScreen() {
       .catch(() => setSalesEnabled(false));
   }, []);
 
+  // La hoja de preparación se abre en una pestaña propia, sin el layout del
+  // panel, lista para imprimir en A4.
+  const openPrint = (id: string) => {
+    window.open(`/print/orders/${id}`, '_blank', 'noopener');
+  };
+
+  // El listado no trae el historial de picking: se carga el detalle completo.
+  const openDetail = async (order: OrderListItem) => {
+    setDetail(order);
+    try {
+      setDetail(await ordersService.getById(order.id));
+    } catch (err) {
+      setError(getApiErrorMessage(err, 'No se pudo cargar el historial del pedido.'));
+    }
+  };
+
   const cancelOrder = async (order: OrderListItem) => {
     const reason = prompt(`Motivo de cancelación del pedido ${order.orderNumber}:`);
     if (!reason?.trim()) return;
@@ -125,7 +150,7 @@ function OrdersScreen() {
         title="Pedidos"
         subtitle={
           isSellerUser
-            ? 'Sus pedidos. Sólo se puede vender lo que hay disponible en el depósito elegido.'
+            ? 'Sus pedidos. Sólo se puede vender lo que hay disponible entre todos los depósitos.'
             : 'Alta de pedidos, asignación de pickers y seguimiento hasta la entrega.'
         }
         actions={<Button onClick={() => setCreateOpen(true)}>+ Nuevo pedido</Button>}
@@ -206,7 +231,7 @@ function OrdersScreen() {
               {data.items.map((o) => (
                 <tr key={o.id}>
                   <td className="px-4 py-3">
-                    <button className="font-mono font-bold text-amber-300 hover:underline" onClick={() => setDetail(o)}>
+                    <button className="font-mono font-bold text-amber-300 hover:underline" onClick={() => openDetail(o)}>
                       {o.orderNumber}
                     </button>
                     <p className="text-xs text-slate-500">{formatDateTime(o.createdAt)}</p>
@@ -247,6 +272,9 @@ function OrdersScreen() {
                   )}
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-2">
+                      <Button size="sm" variant="secondary" onClick={() => openPrint(o.id)}>
+                        Imprimir
+                      </Button>
                       {canManage && (o.status === 'PENDING' || o.status === 'IN_PICKING') && (
                         <Button size="sm" variant="secondary" onClick={() => setAssignTarget(o)}>
                           Pickers
@@ -274,7 +302,7 @@ function OrdersScreen() {
             setCreateOpen(false);
             setSuccess(
               canManage
-                ? `Pedido ${order.orderNumber} creado. Asigne pickers para iniciar el armado.`
+                ? `Pedido ${order.orderNumber} creado y stock reservado (${order.warehouses.map((w) => w.name).join(' + ')}). Asigne pickers para iniciar el armado.`
                 : `Pedido ${order.orderNumber} creado.`,
             );
             await load();
@@ -300,11 +328,30 @@ function OrdersScreen() {
           <div className="space-y-3 text-sm">
             <div className="grid gap-2 sm:grid-cols-3">
               <p><span className="text-slate-500">Cliente:</span> <strong>{detail.customer.name}</strong></p>
-              <p><span className="text-slate-500">Depósito:</span> {detail.sourceWarehouse.name}</p>
               <p>
-                <span className="text-slate-500">Entrega:</span> {formatDate(detail.deliveryDateFrom)} –{' '}
+                <span className="text-slate-500">Depósitos:</span>{' '}
+                {detail.warehouses.length > 0 ? detail.warehouses.map((w) => w.name).join(' + ') : 'Sin asignar'}
+              </p>
+              <p>
+                <span className="text-slate-500">Envío:</span>{' '}
+                {shippingLabel(detail.shippingType, detail.transport?.name)}
+              </p>
+              <p>
+                <span className="text-slate-500">Entrega estimada:</span> {formatDate(detail.estimatedDeliveryDate)}
+              </p>
+              <p>
+                <span className="text-slate-500">Ventana:</span> {formatDate(detail.deliveryDateFrom)} –{' '}
                 {formatDate(detail.deliveryDateTo)}
               </p>
+              <p>
+                <span className="text-slate-500">Vendedor:</span>{' '}
+                {detail.seller ? `${detail.seller.firstName} ${detail.seller.lastName}` : 'Sin asignar'}
+              </p>
+            </div>
+            <div className="flex justify-end">
+              <Button size="sm" variant="secondary" onClick={() => openPrint(detail.id)}>
+                Imprimir hoja de preparación
+              </Button>
             </div>
             {detail.notes && <p className="text-slate-400">{detail.notes}</p>}
             <table className="min-w-full text-xs">
@@ -331,6 +378,8 @@ function OrdersScreen() {
                 ))}
               </tbody>
             </table>
+
+            {detail.pickingHistory && <PickingHistoryView history={detail.pickingHistory} />}
           </div>
         )}
       </Modal>
@@ -359,11 +408,14 @@ function CreateOrderModal({
   const [sellerId, setSellerId] = useState('');
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [addressId, setAddressId] = useState('');
-  const [warehouses, setWarehouses] = useState<{ id: string; name: string }[]>([]);
-  const [warehouseId, setWarehouseId] = useState('');
+  const [orderNumber, setOrderNumber] = useState('');
+  const [shippingType, setShippingType] = useState<ShippingType | ''>('');
+  const [transports, setTransports] = useState<TransportOption[]>([]);
+  const [transportId, setTransportId] = useState('');
   const [productSearch, setProductSearch] = useState('');
   const [products, setProducts] = useState<CatalogProduct[]>([]);
   const [lines, setLines] = useState<DraftLine[]>([]);
+  const [estimatedDate, setEstimatedDate] = useState('');
   const [deliveryFrom, setDeliveryFrom] = useState('');
   const [deliveryTo, setDeliveryTo] = useState('');
   const [notes, setNotes] = useState('');
@@ -385,13 +437,10 @@ function CreateOrderModal({
   }, [isSellerUser, user?.id]);
 
   useEffect(() => {
-    inventoryService
-      .getWarehousesList()
-      .then((list) => {
-        setWarehouses(list);
-        if (list[0]) setWarehouseId(list[0].id);
-      })
-      .catch(() => setWarehouses([]));
+    ordersService
+      .listTransports()
+      .then(setTransports)
+      .catch(() => setTransports([]));
   }, []);
 
   useEffect(() => {
@@ -409,16 +458,18 @@ function CreateOrderModal({
     return () => clearTimeout(t);
   }, [customerSearch]);
 
+  // Búsqueda sólo por código / descripción / EAN: el disponible es el total
+  // consolidado de todos los depósitos (el depósito y la ubicación de cada
+  // bulto se asignan al registrar el pedido).
   useEffect(() => {
-    if (!warehouseId) return;
     const t = setTimeout(() => {
       ordersService
-        .searchProducts({ search: productSearch.trim() || undefined, warehouseId })
+        .searchProducts({ search: productSearch.trim() || undefined })
         .then(setProducts)
         .catch(() => setProducts([]));
     }, 300);
     return () => clearTimeout(t);
-  }, [productSearch, warehouseId]);
+  }, [productSearch]);
 
   const totals = useMemo(
     () =>
@@ -445,8 +496,20 @@ function CreateOrderModal({
 
   const submit = async () => {
     setError(null);
-    if (!customer || !addressId || !warehouseId) {
-      setError('Seleccione cliente, dirección de entrega y depósito.');
+    if (!orderNumber.trim()) {
+      setError('Ingrese el número de presupuesto.');
+      return;
+    }
+    if (!customer || !addressId) {
+      setError('Seleccione cliente y dirección de entrega.');
+      return;
+    }
+    if (!shippingType) {
+      setError('Seleccione el tipo de envío.');
+      return;
+    }
+    if (shippingType === 'EXPRESO' && !transportId) {
+      setError('Seleccione el expreso que realiza el envío.');
       return;
     }
     if (lines.length === 0) {
@@ -455,10 +518,6 @@ function CreateOrderModal({
     }
     if (lines.some((l) => !Number.isInteger(l.bultos) || l.bultos < 1)) {
       setError('Las cantidades deben ser enteros mayores a 0.');
-      return;
-    }
-    if (!sellerId) {
-      setError('Seleccione el vendedor del pedido.');
       return;
     }
     // No se vende lo que no hay: el backend también lo rechaza.
@@ -475,10 +534,13 @@ function CreateOrderModal({
     setSaving(true);
     try {
       const order = await ordersService.create({
+        orderNumber: orderNumber.trim(),
         customerId: customer.id,
         addressId,
-        sourceWarehouseId: warehouseId,
-        ...(isSellerUser ? {} : { sellerId }),
+        ...(isSellerUser || !sellerId ? {} : { sellerId }),
+        shippingType,
+        ...(shippingType === 'EXPRESO' ? { transportId } : {}),
+        estimatedDeliveryDate: estimatedDate || undefined,
         deliveryDateFrom: deliveryFrom || undefined,
         deliveryDateTo: deliveryTo || undefined,
         notes: notes.trim() || undefined,
@@ -511,10 +573,7 @@ function CreateOrderModal({
           <Button
             onClick={submit}
             loading={saving}
-            disabled={
-              !sellerId ||
-              lines.some((l) => l.bultos > l.product.availableBultos)
-            }
+            disabled={lines.some((l) => l.bultos > l.product.availableBultos)}
           >
             Registrar pedido
           </Button>
@@ -525,6 +584,16 @@ function CreateOrderModal({
 
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="space-y-3">
+          <Field label="N° de presupuesto (N° de pedido)">
+            <input
+              className={inputClass}
+              placeholder="Número del presupuesto del sistema externo"
+              maxLength={50}
+              value={orderNumber}
+              onChange={(e) => setOrderNumber(e.target.value)}
+            />
+          </Field>
+
           <Field label="Cliente">
             {customer ? (
               <div className="flex items-center justify-between rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2">
@@ -582,7 +651,7 @@ function CreateOrderModal({
             </Field>
           )}
 
-          <Field label="Vendedor">
+          <Field label="Vendedor (opcional)">
             {isSellerUser ? (
               <p className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200">
                 {user?.fullName} <span className="text-xs text-slate-500">(usted)</span>
@@ -593,7 +662,7 @@ function CreateOrderModal({
                 value={sellerId}
                 onChange={(e) => setSellerId(e.target.value)}
               >
-                <option value="">Seleccione el vendedor…</option>
+                <option value="">Sin vendedor asignado</option>
                 {sellers.map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.fullName}
@@ -604,21 +673,42 @@ function CreateOrderModal({
             )}
           </Field>
 
-          <Field label="Depósito de origen">
+          <Field label="Tipo de envío">
             <select
               className={inputClass}
-              value={warehouseId}
+              value={shippingType}
               onChange={(e) => {
-                setWarehouseId(e.target.value);
-                setLines([]);
+                const v = e.target.value as ShippingType | '';
+                setShippingType(v);
+                if (v !== 'EXPRESO') setTransportId('');
               }}
             >
-              {warehouses.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.name}
-                </option>
-              ))}
+              <option value="">Seleccione…</option>
+              <option value="DSH_TRANSPORT">{SHIPPING_TYPE_LABELS.DSH_TRANSPORT} (transporte propio)</option>
+              <option value="EXPRESO">{SHIPPING_TYPE_LABELS.EXPRESO} (interior / otra provincia)</option>
             </select>
+          </Field>
+
+          {shippingType === 'EXPRESO' && (
+            <Field label="Expreso">
+              <select className={inputClass} value={transportId} onChange={(e) => setTransportId(e.target.value)}>
+                <option value="">Seleccione el expreso…</option>
+                {transports.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+              {transports.length === 0 && (
+                <p className="mt-1 text-xs text-amber-400">
+                  No hay expresos cargados. Un Gestor puede darlos de alta en Transportes.
+                </p>
+              )}
+            </Field>
+          )}
+
+          <Field label="Fecha estimada de entrega">
+            <input type="date" className={inputClass} value={estimatedDate} onChange={(e) => setEstimatedDate(e.target.value)} />
           </Field>
 
           <div className="grid grid-cols-2 gap-3">
@@ -681,7 +771,7 @@ function CreateOrderModal({
                       <span
                         className={`block text-[11px] ${l.bultos > l.product.availableBultos ? 'font-bold text-red-400' : 'text-slate-500'}`}
                       >
-                        Disponible en el depósito: {l.product.availableBultos}
+                        Disponible: {l.product.availableBultos}
                         {l.bultos > l.product.availableBultos &&
                           ` · supera el disponible por ${l.bultos - l.product.availableBultos}`}
                       </span>
@@ -823,5 +913,96 @@ function AssignPickersModal({
         </ul>
       )}
     </Modal>
+  );
+}
+
+// =============================================================================
+// HISTORIAL DE PREPARACIÓN (MULTI-PICKER)
+// =============================================================================
+
+const TASK_STATUS_LABEL: Record<PickingHistoryTask['status'], string> = {
+  PENDING: 'Pendiente',
+  PICKED: 'Tomado',
+  SHORT: 'Faltante',
+  CANCELLED: 'Cancelada',
+};
+
+const STOCK_REQUEST_LABEL: Record<'PENDING' | 'APPROVED' | 'REJECTED', string> = {
+  PENDING: 'cuarentena: ajuste pendiente',
+  APPROVED: 'ajuste aprobado',
+  REJECTED: 'ajuste rechazado (bulto liberado)',
+};
+
+function PickingHistoryView({ history }: { history: PickingHistory }) {
+  if (history.tasks.length === 0) return null;
+  return (
+    <div className="space-y-2 border-t border-slate-800 pt-3">
+      <p className="text-xs font-bold uppercase tracking-widest text-slate-400">Preparación</p>
+      {history.byPicker.length > 0 && (
+        <div className="flex flex-wrap gap-2 text-xs">
+          {history.byPicker.map((p) => (
+            <span key={p.pickerId} className="rounded-full bg-slate-800 px-3 py-1 text-slate-200">
+              <strong>{p.name}</strong>: {p.bultos} bultos · {p.tasks} {p.tasks === 1 ? 'toma' : 'tomas'}
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-xs">
+          <thead className="text-left text-slate-500">
+            <tr>
+              <th className="py-1 pr-2">#</th>
+              <th className="pr-2">Artículo</th>
+              <th className="pr-2">Depósito / ubicación</th>
+              <th className="pr-2 text-right">Tomado</th>
+              <th className="pr-2">Estado</th>
+              <th className="pr-2">Picker</th>
+              <th>Incidencia</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-800">
+            {history.tasks.map((t) => (
+              <tr key={t.id} className="align-top">
+                <td className="py-1.5 pr-2 font-mono text-slate-400">{t.sequence}</td>
+                <td className="pr-2">
+                  <span className="font-mono text-amber-300">{t.sku}</span> {t.productName}
+                </td>
+                <td className="pr-2">
+                  {t.warehouse.name} · <span className="font-mono">{t.locationCode}</span>
+                  {t.replacesLocationCode && (
+                    <span className="block text-sky-300">↻ reemplazo de {t.replacesLocationCode}</span>
+                  )}
+                </td>
+                <td className="pr-2 text-right tabular-nums">
+                  {t.status === 'PENDING' ? '—' : t.pickedQty}/{t.quantity}
+                </td>
+                <td className="pr-2">
+                  <span className={t.status === 'SHORT' ? 'text-red-300' : t.status === 'PICKED' ? 'text-emerald-300' : 'text-slate-400'}>
+                    {TASK_STATUS_LABEL[t.status]}
+                  </span>
+                </td>
+                <td className="pr-2">
+                  {t.pickedBy ?? (t.assignedTo ? `${t.assignedTo} (asignada)` : '—')}
+                  {t.pickedAt && <span className="block text-slate-500">{formatDateTime(t.pickedAt)}</span>}
+                </td>
+                <td>
+                  {t.shortReason ? (
+                    <span className="text-red-200">
+                      {t.quantity - t.pickedQty} · {SHORT_REASON_LABELS[t.shortReason]}
+                      {t.notes ? ` — ${t.notes}` : ''}
+                      {t.stockRequest && (
+                        <span className="block text-slate-400">{STOCK_REQUEST_LABEL[t.stockRequest.status]}</span>
+                      )}
+                    </span>
+                  ) : (
+                    <span className="text-slate-600">—</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }

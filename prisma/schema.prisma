@@ -72,6 +72,12 @@ enum PaymentTerm {
   DEPOSITO
 }
 
+// Logística de entrega del pedido
+enum ShippingType {
+  DSH_TRANSPORT // Transporte propio (Transporte DSH)
+  EXPRESO // Expreso al interior / otra provincia (Order.transportId)
+}
+
 enum InboundStatus {
   PENDIENTE
   RECIBIDO
@@ -113,6 +119,7 @@ model User {
   pickerAssignments      OrderPickerAssignment[]  @relation("AssignedPicker")
   assignmentsMade        OrderPickerAssignment[]  @relation("PickerAssignedBy")
   pickTasks              PickTask[]               @relation("PickTaskPicker")
+  assignedPickTasks      PickTask[]               @relation("PickTaskAssignee")
   loadedStops            RouteStop[]              @relation("StopLoadedBy")
   deliveredStops         RouteStop[]              @relation("StopDeliveredBy")
   stockRequests          StockAdjustmentRequest[] @relation("StockRequestRequestedBy")
@@ -502,7 +509,10 @@ model Order {
   orderNumber       String  @unique @map("order_number") @db.VarChar(50)
   customerId        String  @map("customer_id") @db.Uuid
   addressId         String  @map("address_id") @db.Uuid
-  sourceWarehouseId String  @map("source_warehouse_id") @db.Uuid
+  // Depósito único de los pedidos anteriores al picking multi-depósito. Los
+  // pedidos nuevos lo dejan en NULL: de qué depósito / ubicación sale cada
+  // bulto lo define PickTask (location -> warehouse).
+  sourceWarehouseId String? @map("source_warehouse_id") @db.Uuid
   sellerId          String? @map("seller_id") @db.Uuid
   createdById       String? @map("created_by_id") @db.Uuid
   // Picker "principal" (primer asignado). La asignación multiusuario vive en
@@ -511,6 +521,7 @@ model Order {
   checkedById       String? @map("checked_by_id") @db.Uuid
   // Hoja de ruta vigente (la historia completa está en RouteStop).
   routeId           String? @map("route_id") @db.Uuid
+  // Expreso (Transport) cuando shippingType = EXPRESO
   transportId       String? @map("transport_id") @db.Uuid
   notes             String? @db.Text
 
@@ -526,8 +537,11 @@ model Order {
   paymentTerm PaymentTerm @default(CUENTA_CORRIENTE) @map("payment_term")
   status      OrderStatus @default(PENDING)
 
-  deliveryDateFrom DateTime? @map("delivery_date_from") @db.Date
-  deliveryDateTo   DateTime? @map("delivery_date_to") @db.Date
+  shippingType ShippingType @default(DSH_TRANSPORT) @map("shipping_type")
+
+  deliveryDateFrom      DateTime? @map("delivery_date_from") @db.Date
+  deliveryDateTo        DateTime? @map("delivery_date_to") @db.Date
+  estimatedDeliveryDate DateTime? @map("estimated_delivery_date") @db.Date
 
   // Totales logísticos (siempre calculados)
   totalBultos   Int     @default(0) @map("total_bultos")
@@ -543,7 +557,7 @@ model Order {
 
   customer          Customer                @relation(fields: [customerId], references: [id])
   deliveryAddress   CustomerAddress         @relation(fields: [addressId], references: [id])
-  sourceWarehouse   Warehouse               @relation("SourceWarehouse", fields: [sourceWarehouseId], references: [id])
+  sourceWarehouse   Warehouse?              @relation("SourceWarehouse", fields: [sourceWarehouseId], references: [id], onDelete: Restrict)
   seller            User?                   @relation("SellerOrders", fields: [sellerId], references: [id])
   createdBy         User?                   @relation("OrderCreatedBy", fields: [createdById], references: [id])
   picker            User?                   @relation("PickerOrders", fields: [pickerId], references: [id])
@@ -632,19 +646,38 @@ model PickTask {
   pickedById  String?        @map("picked_by_id") @db.Uuid
   pickedAt    DateTime?      @map("picked_at")
 
-  order     Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  orderItem OrderItem  @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
-  product   Product    @relation(fields: [productId], references: [id])
-  location  Location   @relation(fields: [locationId], references: [id])
-  inventory Inventory? @relation(fields: [inventoryId], references: [id], onDelete: SetNull)
-  pickedBy  User?      @relation("PickTaskPicker", fields: [pickedById], references: [id])
+  // Faltante: motivo obligatorio cuando pickedQty < quantity
+  shortReason    PickShortReason? @map("short_reason")
+  notes          String?          @db.VarChar(255)
+  // Tarea de reemplazo generada ante un faltante -> tarea original
+  replacesTaskId String?          @map("replaces_task_id") @db.Uuid
+  // Picker al que se le asignó la tarea (reemplazos en el mismo depósito)
+  assignedToId   String?          @map("assigned_to_id") @db.Uuid
+
+  order        Order                   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderItem    OrderItem               @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  product      Product                 @relation(fields: [productId], references: [id])
+  location     Location                @relation(fields: [locationId], references: [id])
+  inventory    Inventory?              @relation(fields: [inventoryId], references: [id], onDelete: SetNull)
+  pickedBy     User?                   @relation("PickTaskPicker", fields: [pickedById], references: [id])
+  assignedTo   User?                   @relation("PickTaskAssignee", fields: [assignedToId], references: [id])
+  replacesTask PickTask?               @relation("PickTaskReplacement", fields: [replacesTaskId], references: [id], onDelete: SetNull)
+  replacements PickTask[]              @relation("PickTaskReplacement")
+  stockRequest StockAdjustmentRequest?
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@index([orderId, status])
   @@index([inventoryId])
+  @@index([replacesTaskId])
   @@map("pick_tasks")
+}
+
+enum PickShortReason {
+  DAMAGED // Roto / en mal estado (cuarentena + ajuste)
+  NOT_FOUND // No estaba en la ubicación (cuarentena + ajuste)
+  OTHER // Otro motivo (observación obligatoria; se libera la reserva)
 }
 
 // ==========================================
@@ -679,7 +712,13 @@ model StockAdjustmentRequest {
   reviewedById  String?            @map("reviewed_by_id") @db.Uuid
   reviewedAt    DateTime?          @map("reviewed_at")
   reviewNotes   String?            @map("review_notes") @db.VarChar(255)
+  // Faltante de picking (DAMAGED / NOT_FOUND): tarea de origen (única =>
+  // idempotencia) y bultos en cuarentena (siguen en Inventory.reserved hasta
+  // aprobar o rechazar).
+  pickTaskId    String?            @unique @map("pick_task_id") @db.Uuid
+  heldQty       Int                @default(0) @map("held_qty")
 
+  pickTask    PickTask?  @relation(fields: [pickTaskId], references: [id], onDelete: SetNull)
   inventory   Inventory? @relation(fields: [inventoryId], references: [id], onDelete: SetNull)
   warehouse   Warehouse  @relation(fields: [warehouseId], references: [id])
   location    Location   @relation(fields: [locationId], references: [id])

@@ -41,6 +41,13 @@ export class OrdersController {
     return this.ordersService.create(dto, user);
   }
 
+  /** Expresos para el alta (también los usa el Vendedor). */
+  @Get('transports')
+  @RequirePermissions(Permission.ORDERS_CREATE)
+  listTransports() {
+    return this.ordersService.listTransports();
+  }
+
   @Get()
   @RequirePermissions(Permission.ORDERS_VIEW)
   findAll(
@@ -57,6 +64,16 @@ export class OrdersController {
     @GetUser() user: AuthenticatedUser,
   ) {
     return this.ordersService.findOne(id, user);
+  }
+
+  /** Hoja de preparación: artículos por depósito / ubicación, en recorrido. */
+  @Get(':id/print')
+  @RequirePermissions(Permission.ORDERS_VIEW)
+  getPrintSheet(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    return this.ordersService.getPrintSheet(id, user);
   }
 
   @Patch(':id/cancel')

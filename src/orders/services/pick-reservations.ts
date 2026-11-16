@@ -112,9 +112,19 @@ type QueryDb = { $queryRaw: Tx['$queryRaw'] };
  */
 export async function fetchAvailableStock(
   db: QueryDb,
-  filter: { productIds?: string[]; warehouseIds?: string[] } = {},
+  filter: {
+    productIds?: string[];
+    warehouseIds?: string[];
+    /** Sólo depósitos activos: lo que puede reservar el alta de pedidos. */
+    activeWarehousesOnly?: boolean;
+  } = {},
 ): Promise<AvailableStockRow[]> {
   const conds: Prisma.Sql[] = [Prisma.sql`l.is_blocked = false`];
+  if (filter.activeWarehousesOnly) {
+    conds.push(
+      Prisma.sql`EXISTS (SELECT 1 FROM warehouses w WHERE w.id = i.warehouse_id AND w.is_active = true)`,
+    );
+  }
   if (filter.productIds) {
     if (filter.productIds.length === 0) return [];
     conds.push(Prisma.sql`i.product_id = ANY(${filter.productIds}::uuid[])`);

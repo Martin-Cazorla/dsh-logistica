@@ -7,8 +7,13 @@ import {
   BadRequestException,
   ForbiddenException,
 } from '@nestjs/common';
-import { OrderStatus, Prisma, UserRole } from '@prisma/client';
-import { randomBytes } from 'node:crypto';
+import {
+  OrderStatus,
+  PickTaskStatus,
+  Prisma,
+  ShippingType,
+  UserRole,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { AuditAction, AuditEntity } from '../audit/audit.actions';
@@ -27,15 +32,19 @@ import {
   fetchAvailableStock,
   releasePendingReservations,
 } from './services/pick-reservations';
+import { planAndReserve } from './services/pick-planner';
 import { isSeller } from '../auth/permissions';
 import { canSellerUseCustomer, orderScopeFor } from '../common/seller-scope';
+import { OrderPrintSheet, toOrderPrintSheet } from './mappers/order-print.mapper';
 
 const USER_NAME = { select: { id: true, firstName: true, lastName: true } };
+
+const WAREHOUSE_REF = { select: { id: true, name: true, code: true } };
 
 const ORDER_LIST_INCLUDE = {
   customer: { select: { id: true, name: true, cuit: true } },
   deliveryAddress: true,
-  sourceWarehouse: { select: { id: true, name: true, code: true } },
+  sourceWarehouse: WAREHOUSE_REF,
   transport: { select: { id: true, name: true } },
   createdBy: USER_NAME,
   seller: USER_NAME,
@@ -44,6 +53,12 @@ const ORDER_LIST_INCLUDE = {
     orderBy: { assignedAt: 'asc' },
   },
   route: { select: { id: true, code: true, status: true } },
+  // Depósitos que recorre el pedido (derivados de sus tareas de picking)
+  pickTasks: {
+    where: { status: { not: PickTaskStatus.CANCELLED } },
+    select: { location: { select: { warehouse: WAREHOUSE_REF } } },
+    orderBy: { sequence: 'asc' },
+  },
   items: {
     include: {
       product: {
@@ -65,6 +80,28 @@ const CANCELLABLE: OrderStatus[] = [
   OrderStatus.IN_PICKING,
 ];
 
+type WarehouseRef = { id: string; name: string; code: string };
+
+/**
+ * Reemplaza `pickTasks` (sólo pedido para esto) por `warehouses`: los
+ * depósitos que recorre el pedido en el orden del recorrido. Los pedidos
+ * históricos sin tareas muestran su depósito único.
+ */
+function withWarehouses<
+  T extends {
+    pickTasks: Array<{ location: { warehouse: WarehouseRef } }>;
+    sourceWarehouse: WarehouseRef | null;
+  },
+>(order: T): Omit<T, 'pickTasks'> & { warehouses: WarehouseRef[] } {
+  const { pickTasks, ...rest } = order;
+  const map = new Map<string, WarehouseRef>();
+  for (const t of pickTasks) map.set(t.location.warehouse.id, t.location.warehouse);
+  if (map.size === 0 && order.sourceWarehouse) {
+    map.set(order.sourceWarehouse.id, order.sourceWarehouse);
+  }
+  return { ...rest, warehouses: [...map.values()] };
+}
+
 @Injectable()
 export class OrdersService {
   constructor(
@@ -76,6 +113,12 @@ export class OrdersService {
   // ALTA DE PEDIDOS
   // ---------------------------------------------------------------------------
 
+  /**
+   * Alta con reserva inmediata: en la misma transacción se crea el pedido,
+   * se planifica el picking multi-depósito (de qué depósito / ubicación sale
+   * cada bulto) y se reserva el stock. Así dos pedidos pendientes no pueden
+   * vender el mismo bulto y la hoja de preparación es exacta desde el alta.
+   */
   async create(dto: CreateOrderDto, actor: AuthenticatedUser) {
     const productIds = dto.items.map((i) => i.productId);
     if (new Set(productIds).size !== productIds.length) {
@@ -94,9 +137,15 @@ export class OrdersService {
       );
     }
 
-    const sellerId = await this.resolveSeller(dto, actor);
+    const orderNumber = dto.orderNumber.trim();
+    if (!orderNumber) {
+      throw new BadRequestException('Indique el número de presupuesto.');
+    }
 
-    const [address, warehouse, products, customer] = await Promise.all([
+    const sellerId = await this.resolveSeller(dto, actor);
+    const transportId = await this.resolveTransport(dto);
+
+    const [address, products, customer] = await Promise.all([
       this.prisma.customerAddress.findFirst({
         where: {
           id: dto.addressId,
@@ -104,10 +153,6 @@ export class OrdersService {
           isActive: true,
         },
         select: { id: true },
-      }),
-      this.prisma.warehouse.findUnique({
-        where: { id: dto.sourceWarehouseId },
-        select: { id: true, isActive: true },
       }),
       this.prisma.product.findMany({
         where: { id: { in: productIds } },
@@ -139,11 +184,6 @@ export class OrdersService {
         'La dirección de entrega no pertenece al cliente seleccionado.',
       );
     }
-    if (!warehouse || !warehouse.isActive) {
-      throw new NotFoundException(
-        'El depósito de origen no existe o está inactivo.',
-      );
-    }
 
     const productMap = new Map(products.map((p) => [p.id, p]));
     const missing = productIds.filter((id) => !productMap.has(id));
@@ -154,36 +194,27 @@ export class OrdersService {
     }
 
     // No se vende lo que no hay: cada línea debe caber en el DISPONIBLE
-    // (físico − reservado) del depósito elegido, con la misma regla que usa la
-    // reserva del picking.
+    // consolidado (físico − reservado) de todos los depósitos activos. La
+    // reserva dentro de la transacción vuelve a comprobarlo con bloqueo.
     const availability = await fetchAvailableStock(this.prisma, {
       productIds,
-      warehouseIds: [dto.sourceWarehouseId],
+      activeWarehousesOnly: true,
     });
-    const availableByProduct = new Map(
-      availability.map((a) => [a.productId, a.available]),
-    );
-    const shortages = dto.items
-      .map((item) => ({
+    const availableByProduct = new Map<string, number>();
+    for (const a of availability) {
+      availableByProduct.set(
+        a.productId,
+        (availableByProduct.get(a.productId) ?? 0) + a.available,
+      );
+    }
+    this.assertNoShortages(
+      dto.items.map((item) => ({
         productId: item.productId,
         sku: productMap.get(item.productId)!.sku,
         requested: item.bultos,
         available: availableByProduct.get(item.productId) ?? 0,
-      }))
-      .filter((line) => line.requested > line.available);
-    if (shortages.length > 0) {
-      throw new BadRequestException({
-        statusCode: 400,
-        error: 'Bad Request',
-        message: `Stock disponible insuficiente: ${shortages
-          .map(
-            (l) =>
-              `${l.sku} (pedido ${l.requested}, disponible ${l.available})`,
-          )
-          .join(', ')}.`,
-        shortages,
-      });
-    }
+      })),
+    );
 
     const salesEnabled = isSalesModuleEnabled();
     let totalBultos = 0;
@@ -241,68 +272,105 @@ export class OrdersService {
           .toDecimalPlaces(2)
       : null;
 
-    const orderNumber = dto.orderNumber?.trim() || this.generateOrderNumber();
-
     try {
-      return await this.prisma.$transaction(async (tx) => {
-        const order = await tx.order.create({
-          data: {
-            orderNumber,
-            customerId: dto.customerId,
-            addressId: dto.addressId,
-            sourceWarehouseId: dto.sourceWarehouseId,
-            sellerId,
-            transportId: dto.transportId ?? null,
-            createdById: actor.id,
-            currency: dto.currency,
-            paymentTerm: dto.paymentTerm,
-            notes: dto.notes?.trim() || null,
-            status: OrderStatus.PENDING,
-            deliveryDateFrom: dto.deliveryDateFrom
-              ? new Date(dto.deliveryDateFrom)
-              : null,
-            deliveryDateTo: dto.deliveryDateTo
-              ? new Date(dto.deliveryDateTo)
-              : null,
-            totalBultos,
-            totalWeightKg,
-            totalVolumeM3,
-            subtotalAmount: salesEnabled ? subtotal : null,
-            discountAmount: null,
-            taxAmount,
-            totalAmount:
-              salesEnabled && taxAmount ? subtotal.add(taxAmount) : 0,
-            items: { create: preparedItems },
-          },
-          include: ORDER_LIST_INCLUDE,
-        });
-
-        await this.audit.log(
-          {
-            actor,
-            action: AuditAction.ORDER_CREATED,
-            entityType: AuditEntity.ORDER,
-            entityId: order.id,
-            metadata: {
+      const orderId = await this.prisma.$transaction(
+        async (tx) => {
+          const order = await tx.order.create({
+            data: {
               orderNumber,
               customerId: dto.customerId,
+              addressId: dto.addressId,
+              sourceWarehouseId: null, // multi-depósito: lo define cada PickTask
               sellerId,
-              items: dto.items.length,
+              shippingType: dto.shippingType,
+              transportId,
+              createdById: actor.id,
+              currency: dto.currency,
+              paymentTerm: dto.paymentTerm,
+              notes: dto.notes?.trim() || null,
+              status: OrderStatus.PENDING,
+              deliveryDateFrom: dto.deliveryDateFrom
+                ? new Date(dto.deliveryDateFrom)
+                : null,
+              deliveryDateTo: dto.deliveryDateTo
+                ? new Date(dto.deliveryDateTo)
+                : null,
+              estimatedDeliveryDate: dto.estimatedDeliveryDate
+                ? new Date(dto.estimatedDeliveryDate)
+                : null,
               totalBultos,
+              totalWeightKg,
+              totalVolumeM3,
+              subtotalAmount: salesEnabled ? subtotal : null,
+              discountAmount: null,
+              taxAmount,
+              totalAmount:
+                salesEnabled && taxAmount ? subtotal.add(taxAmount) : 0,
+              items: { create: preparedItems },
             },
-          },
-          tx,
-        );
+            select: {
+              id: true,
+              items: { select: { id: true, productId: true, bultos: true } },
+            },
+          });
 
-        return this.present(order, actor);
-      });
+          const { plan, reserved } = await planAndReserve(tx, {
+            orderId: order.id,
+            items: order.items,
+            allowShortages: false,
+          });
+          if (!reserved) {
+            // Otro pedido tomó el stock entre la validación y la reserva
+            const missingBy = new Map(
+              plan.shortages.map((s) => [s.productId, s.missing]),
+            );
+            this.assertNoShortages(
+              dto.items.map((item) => {
+                const lack = missingBy.get(item.productId) ?? 0;
+                return {
+                  productId: item.productId,
+                  sku: productMap.get(item.productId)!.sku,
+                  requested: item.bultos,
+                  available: item.bultos - lack,
+                };
+              }),
+            );
+          }
+
+          await this.audit.log(
+            {
+              actor,
+              action: AuditAction.ORDER_CREATED,
+              entityType: AuditEntity.ORDER,
+              entityId: order.id,
+              metadata: {
+                orderNumber,
+                customerId: dto.customerId,
+                sellerId,
+                shippingType: dto.shippingType,
+                transportId,
+                items: dto.items.length,
+                totalBultos,
+                pickTasks: plan.picks.length,
+                warehouses: plan.warehouseOrder,
+              },
+            },
+            tx,
+          );
+
+          return order.id;
+        },
+        { timeout: 20000 },
+      );
+
+      return this.findOne(orderId, actor);
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2002'
       ) {
         throw new ConflictException(
-          `Ya existe un pedido registrado con el número "${orderNumber}".`,
+          `Ya existe un pedido registrado con el número de presupuesto "${orderNumber}".`,
         );
       }
       throw error;
@@ -340,7 +408,7 @@ export class OrdersService {
     ]);
 
     return {
-      items: orders.map((o) => this.present(o, actor)),
+      items: orders.map((o) => this.present(withWarehouses(o), actor)),
       meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
     };
   }
@@ -408,7 +476,159 @@ export class OrdersService {
       );
     }
 
-    return this.present(order, actor);
+    const pickingHistory = await this.loadPickingHistory(id);
+    return this.present({ ...withWarehouses(order), pickingHistory }, actor);
+  }
+
+  /**
+   * Trazabilidad multi-picker: cada toma (original o reemplazo) con quién la
+   * confirmó, cuánto, dónde, y la incidencia si hubo faltante.
+   */
+  private async loadPickingHistory(orderId: string) {
+    const tasks = await this.prisma.pickTask.findMany({
+      where: { orderId, status: { not: PickTaskStatus.CANCELLED } },
+      select: {
+        id: true,
+        sequence: true,
+        quantity: true,
+        pickedQty: true,
+        status: true,
+        pickedAt: true,
+        shortReason: true,
+        notes: true,
+        replacesTaskId: true,
+        product: { select: { sku: true, name: true } },
+        location: { select: { code: true, warehouse: WAREHOUSE_REF } },
+        pickedBy: USER_NAME,
+        assignedTo: USER_NAME,
+        replacesTask: { select: { location: { select: { code: true } } } },
+        stockRequest: { select: { id: true, status: true, heldQty: true } },
+      },
+      orderBy: { sequence: 'asc' },
+    });
+
+    const fullName = (u: { firstName: string; lastName: string } | null) =>
+      u ? `${u.firstName} ${u.lastName}`.trim() : null;
+
+    const byPicker = new Map<
+      string,
+      { pickerId: string; name: string; bultos: number; tasks: number }
+    >();
+    for (const t of tasks) {
+      if (!t.pickedBy) continue;
+      const entry = byPicker.get(t.pickedBy.id) ?? {
+        pickerId: t.pickedBy.id,
+        name: fullName(t.pickedBy)!,
+        bultos: 0,
+        tasks: 0,
+      };
+      entry.bultos += t.pickedQty;
+      entry.tasks += 1;
+      byPicker.set(t.pickedBy.id, entry);
+    }
+
+    return {
+      byPicker: [...byPicker.values()],
+      tasks: tasks.map((t) => ({
+        id: t.id,
+        sequence: t.sequence,
+        sku: t.product.sku,
+        productName: t.product.name,
+        warehouse: t.location.warehouse,
+        locationCode: t.location.code,
+        quantity: t.quantity,
+        pickedQty: t.pickedQty,
+        status: t.status,
+        pickedBy: fullName(t.pickedBy),
+        pickedAt: t.pickedAt,
+        assignedTo: fullName(t.assignedTo),
+        shortReason: t.shortReason,
+        notes: t.notes,
+        replacesTaskId: t.replacesTaskId,
+        replacesLocationCode: t.replacesTask?.location.code ?? null,
+        stockRequest: t.stockRequest,
+      })),
+    };
+  }
+
+  /**
+   * Hoja de preparación: una fila por toma de picking (depósito + ubicación),
+   * agrupada por depósito y en el orden del recorrido.
+   */
+  async getPrintSheet(
+    id: string,
+    actor: AuthenticatedUser,
+  ): Promise<OrderPrintSheet> {
+    const order = await this.prisma.order.findFirst({
+      where: { id, ...orderScopeFor(actor) },
+      select: {
+        id: true,
+        orderNumber: true,
+        status: true,
+        createdAt: true,
+        notes: true,
+        shippingType: true,
+        estimatedDeliveryDate: true,
+        deliveryDateFrom: true,
+        deliveryDateTo: true,
+        totalBultos: true,
+        customer: { select: { name: true, cuit: true } },
+        deliveryAddress: {
+          select: {
+            alias: true,
+            address: true,
+            city: true,
+            province: true,
+            zipCode: true,
+          },
+        },
+        seller: USER_NAME,
+        transport: { select: { name: true } },
+        items: {
+          select: {
+            id: true,
+            bultos: true,
+            product: { select: { sku: true, name: true, unitsPerBox: true } },
+          },
+        },
+        pickerAssignments: {
+          select: { user: USER_NAME },
+          orderBy: { assignedAt: 'asc' },
+        },
+        pickTasks: {
+          where: { status: { not: PickTaskStatus.CANCELLED } },
+          select: {
+            orderItemId: true,
+            sequence: true,
+            quantity: true,
+            pickedQty: true,
+            status: true,
+            shortReason: true,
+            notes: true,
+            replacesTaskId: true,
+            pickedBy: USER_NAME,
+            location: { select: { code: true, warehouse: WAREHOUSE_REF } },
+          },
+          orderBy: { sequence: 'asc' },
+        },
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException(
+        `El pedido con ID "${id}" no fue encontrado.`,
+      );
+    }
+
+    return toOrderPrintSheet(order);
+  }
+
+  /** Expresos disponibles para el alta de pedidos. */
+  listTransports() {
+    return this.prisma.transport.findMany({
+      select: { id: true, name: true, address: true, phone: true },
+      orderBy: { name: 'asc' },
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -417,7 +637,8 @@ export class OrdersService {
 
   /**
    * Sólo se cancelan pedidos sin bultos ya retirados de las ubicaciones
-   * (stock intacto). Libera las reservas de las tareas de picking pendientes.
+   * (stock intacto). Libera las reservas de las tareas de picking pendientes
+   * (las de un pedido PENDING se reservaron en el alta).
    */
   async cancel(id: string, dto: CancelOrderDto, actor: AuthenticatedUser) {
     await this.prisma.$transaction(async (tx) => {
@@ -467,16 +688,36 @@ export class OrdersService {
 
   // ---------------------------------------------------------------------------
 
+  private assertNoShortages(
+    lines: Array<{
+      productId: string;
+      sku: string;
+      requested: number;
+      available: number;
+    }>,
+  ) {
+    const shortages = lines.filter((l) => l.requested > l.available);
+    if (shortages.length === 0) return;
+    throw new BadRequestException({
+      statusCode: 400,
+      error: 'Bad Request',
+      message: `Stock disponible insuficiente: ${shortages
+        .map((l) => `${l.sku} (pedido ${l.requested}, disponible ${l.available})`)
+        .join(', ')}.`,
+      shortages,
+    });
+  }
+
   /**
-   * Vendedor obligatorio en pedidos nuevos:
+   * Vendedor del pedido (opcional):
    *  - Si carga un Vendedor, el vendedor es él mismo (no puede elegir otro).
-   *  - Si carga un Administrador o Gestor, debe indicar un usuario activo con
-   *    rol Vendedor (el frontend precarga el vendedor de cuenta del cliente).
+   *  - Si carga un Administrador o Gestor puede dejarlo vacío; si lo indica,
+   *    debe ser un usuario activo con rol Vendedor.
    */
   private async resolveSeller(
     dto: CreateOrderDto,
     actor: AuthenticatedUser,
-  ): Promise<string> {
+  ): Promise<string | null> {
     if (isSeller(actor.role)) {
       if (dto.sellerId && dto.sellerId !== actor.id) {
         throw new ForbiddenException(
@@ -486,9 +727,8 @@ export class OrdersService {
       return actor.id;
     }
 
-    if (!dto.sellerId) {
-      throw new BadRequestException('Indique el vendedor del pedido.');
-    }
+    if (!dto.sellerId) return null;
+
     const seller = await this.prisma.user.findUnique({
       where: { id: dto.sellerId },
       select: { role: true, isActive: true },
@@ -501,13 +741,23 @@ export class OrdersService {
     return dto.sellerId;
   }
 
-  private present<T extends object>(order: T, actor: AuthenticatedUser): T {
-    return canViewMoney(actor.role) ? order : stripMoney(order);
+  /** Expreso: obligatorio y existente sólo si el envío es por expreso. */
+  private async resolveTransport(dto: CreateOrderDto): Promise<string | null> {
+    if (dto.shippingType !== ShippingType.EXPRESO) return null;
+    if (!dto.transportId) {
+      throw new BadRequestException('Seleccione el expreso del envío.');
+    }
+    const transport = await this.prisma.transport.findUnique({
+      where: { id: dto.transportId },
+      select: { id: true },
+    });
+    if (!transport) {
+      throw new BadRequestException('El expreso indicado no existe.');
+    }
+    return transport.id;
   }
 
-  private generateOrderNumber(): string {
-    const now = new Date();
-    const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-    return `PED-${ymd}-${randomBytes(3).toString('hex').toUpperCase()}`;
+  private present<T extends object>(order: T, actor: AuthenticatedUser): T {
+    return canViewMoney(actor.role) ? order : stripMoney(order);
   }
 }
